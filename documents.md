@@ -2,7 +2,7 @@
 
 > 版本：v1.0  
 > 日期：2026-08-26  
-> 状态：开发中 · 基础骨架已完成
+> 状态：开发中 · 核心联调页面已完成
 
 
 ## 一、项目概述
@@ -36,7 +36,8 @@
 
 - **API 基础路径**：通过 `VITE_API_BASE_URL` 环境变量配置
 - **开发环境代理**：Vite 代理 `/api` 到 Django 后端 `http://127.0.0.1:8000`
-- **认证方式**：预留 JWT 或 Session（当前未实现，后续扩展）
+- **认证方式**：Session；Axios 使用 `withCredentials` 携带会话 Cookie
+- **当前联调范围**：用户认证、自选池、Case/Suite/Plan、执行日志和委托单
 
 
 ## 二、项目结构
@@ -55,9 +56,10 @@ quant-frontend/
 │   │   └── DefaultLayout.vue  # 默认布局（顶部导航 + 主内容区）
 │   ├── views/                 # 页面级组件
 │   │   ├── Home.vue           # 首页
-│   │   ├── Designer.vue       # 策略设计器（画布占位）
-│   │   ├── Dashboard.vue      # 执行监控
-│   │   └── Watchlist.vue      # 自选池管理
+│   │   ├── Designer.vue       # Case/Suite/Plan 策略配置页（Vue Flow 画布待增强）
+│   │   ├── Dashboard.vue      # 执行监控：日志、运行中任务、委托单
+│   │   ├── Watchlist.vue      # 自选池：标的、分组和自选配置
+│   │   └── Login.vue          # Session 登录页
 │   ├── components/            # 可复用组件（待补充）
 │   │   ├── common/            # 通用组件（按钮、卡片、弹窗等）
 │   │   ├── designer/          # 设计器专用组件（节点库、属性面板等）
@@ -65,23 +67,16 @@ quant-frontend/
 │   ├── router/
 │   │   └── index.ts           # 路由配置
 │   ├── stores/                # Pinia Store
-│   │   ├── counter.ts         # 示例 Store
-│   │   ├── watchlist.ts       # 自选池状态（待补充）
-│   │   ├── designer.ts        # 设计器状态（待补充）
-│   │   └── execution.ts       # 执行状态（待补充）
+│   │   ├── counter.ts         # 模板遗留示例 Store
+│   │   └── auth.ts            # 当前用户与 Session 登录状态
 │   ├── api/                   # API 请求封装
 │   │   ├── index.ts           # Axios 实例（拦截器）
-│   │   ├── watchlists.ts      # 自选池相关 API（待补充）
-│   │   ├── datasources.ts     # 数据源相关 API（待补充）
-│   │   ├── cases.ts           # Case 相关 API（待补充）
-│   │   ├── suites.ts          # Suite 相关 API（待补充）
-│   │   ├── plans.ts           # Plan 相关 API（待补充）
-│   │   └── execution.ts       # 执行相关 API（待补充）
+│   │   ├── watchlists.ts      # 标的、分组和自选配置 API
+│   │   ├── strategy.ts        # Case、Suite、Plan API
+│   │   ├── users.ts           # 登录、注册、退出、用户资料 API
+│   │   └── execution.ts       # 运行记录、执行日志、委托单 API
 │   ├── types/                 # TypeScript 类型定义
-│   │   ├── global.d.ts        # 全局类型
-│   │   ├── watchlist.d.ts     # 自选池类型
-│   │   ├── designer.d.ts      # 设计器类型（节点、边等）
-│   │   └── execution.d.ts     # 执行相关类型
+│   │   └── api.ts             # 业务 API 响应与领域类型
 │   └── utils/                 # 工具函数
 │       ├── formatters.ts      # 日期/数字格式化
 │       └── validators.ts      # 表单校验规则
@@ -96,11 +91,14 @@ quant-frontend/
 
 #### 路由配置（`src/router/index.ts`）
 
-当前已定义四个主要路由：
+当前已定义主要路由：
 - `/` → `Home`（首页）
 - `/designer` → `Designer`（策略设计器）
 - `/dashboard` → `Dashboard`（执行监控）
 - `/watchlist` → `Watchlist`（自选池）
+- `/login` → `Login`（登录页）
+
+其中 `/watchlist` 已启用登录守卫；未认证用户会被重定向到 `/login`，登录成功后返回原目标页面。
 
 后续可根据需要添加：
 - `/cases/:id` – 编辑单个 Case
@@ -122,7 +120,7 @@ Axios 实例配置：
 - 请求拦截器：预留添加 Token 的位置
 - 响应拦截器：直接返回 `response.data`，错误统一打印
 
-**扩展示例：** 为每个业务模块创建独立的 API 文件，例如 `api/watchlists.ts`：
+**当前实现：** 业务 API 已按领域拆分为 `api/watchlists.ts`、`api/strategy.ts`、`api/users.ts` 和 `api/execution.ts`：
 
 ```typescript
 import api from './index';
@@ -162,13 +160,20 @@ export const useWatchlistStore = defineStore('watchlist', () => {
 });
 ```
 
-### 3.4 策略设计器（`views/Designer.vue`）
+### 3.4 策略配置与设计器（`views/Designer.vue`）
 
-当前为占位页面，后续将集成 Vue Flow：
-- 左侧工具栏：拖拽节点（Case）至画布
-- 画布区域：渲染节点和连线，支持拖拽、缩放、选择
-- 右侧属性面板：编辑选中节点的参数（RSI 周期、阈值等）
-- 顶部操作栏：保存、发布、撤销/重做等
+当前已实现：
+- Case、Suite、Plan 三类对象列表
+- 创建 Case、Suite、Plan
+- Case 参数 JSON 编辑与基础格式校验
+- Case 发布操作
+- 后端数据加载、加载态、错误提示和成功提示
+
+尚未实现：
+- Vue Flow 拖拽画布
+- Case 节点和 Edge 的可视化编辑
+- Suite 拓扑保存、发布按钮和版本历史界面
+- Plan 发布、版本历史和手动触发界面
 
 **Vue Flow 基础配置示例**：
 
@@ -179,19 +184,30 @@ import '@vue-flow/core/dist/style.css';
 
 ### 3.5 执行监控（`views/Dashboard.vue`）
 
-计划实现功能：
-- 统计卡片：今日执行数、成功率、拦截数
-- 执行日志列表：按时间倒序，支持按标的/Plan/状态筛选
-- 日志详情弹窗：展示树形执行轨迹（Suite → Case 的嵌套结果）
-- 委托单列表：显示待发送/已成交/已拒绝的委托
+当前已实现：
+- 执行记录总数、成功率、运行中数量和委托单数量
+- 执行日志列表及状态筛选
+- 方向、状态、耗时和异常信息展示
+- 委托单列表，展示方向、价格、数量、状态和更新时间
+- 手动刷新和空态/错误态
+
+尚未实现：
+- 自动轮询或 WebSocket 实时刷新
+- Suite → Case 树形执行轨迹详情
+- 按 Plan、日期和标的的组合筛选
 
 ### 3.6 自选池管理（`views/Watchlist.vue`）
 
-计划实现功能：
-- 标的列表：分页、搜索（按代码/名称）、过滤（按市场）
-- 分组管理：左侧分组列表，右侧属于该分组的标的
-- 用户自选池：勾选分组作为自选，保存配置
-- 批量操作：批量导入标的（上传 CSV）
+当前已实现：
+- 标的列表加载和按代码/名称搜索
+- 分组加载和分组数量展示
+- 勾选分组作为当前用户自选配置
+- 自选配置保存、刷新、加载态和错误态
+
+尚未实现：
+- 按市场/交易所筛选控件
+- 分组新增、编辑、删除和标的绑定操作
+- 批量导入 CSV
 
 
 ## 四、开发环境配置
@@ -301,6 +317,33 @@ npm run preview
 ```
 前端应统一拦截，使用 Element Plus 的 `ElMessage` 或 `ElNotification` 提示用户。
 
+### 6.4 当前已对接接口
+
+| 前端 API | 后端路径 | 当前用途 |
+|----------|----------|----------|
+| `usersApi` | `/api/users/login/`、`register/`、`logout/`、`profile/` | Session 登录、注册、退出和用户资料 |
+| `watchlistsApi` | `/api/watchlists/symbols/`、`groups/`、`watchlist/` | 标的、分组和当前用户自选配置 |
+| `strategyApi` | `/api/cases/`、`/api/suites/`、`/api/plans/` | 策略对象查询、创建和 Case 发布 |
+| `executionApi` | `/api/execution/logs/`、`orders/`、`runs/`、`trigger/` | 执行监控和手动触发 |
+
+Axios 实例设置 `withCredentials: true`，用于携带 Django Session Cookie。当前错误处理保留原始 Promise rejection，由页面负责展示业务提示。
+
+### 6.5 当前限制
+
+- 部分 DRF 列表接口可能返回分页对象 `{ count, next, previous, results }`；当前页面按非分页数组读取，接入分页配置后需统一增加响应解包函数。
+- Django Session 的 CSRF 保护需要在生产环境补充 CSRF Cookie 获取和请求头注入。
+- `/designer` 当前是策略配置页，不等同于完整 Vue Flow 画布。
+
+### 6.6 前端验证
+
+在 `quant-frontend` 目录执行：
+
+```bash
+npm run build
+```
+
+当前构建已通过；Vite 仍提示主 bundle 体积较大，代码分割属于后续性能优化项。
+
 
 ## 七、后续迭代计划
 
@@ -335,7 +378,13 @@ npm run preview
 
 ### 7.4 当前建议
 
-首个前端开发切片应为“认证与 API 基础 + 自选池列表”，随后立即接入 Case/Suite/Plan 的 CRUD 和发布流程。暂不优先投入首页视觉、完整数据源图表或设计器高级功能，这些都不会解除当前的联调阻塞。
+已完成“认证与 API 基础 + 自选池 + 策略对象基础配置 + 执行监控”的第一阶段联调切片。下一阶段建议按以下顺序推进：
+
+1. 补齐 Session CSRF 处理、分页响应解包和全局错误拦截。
+2. 为 Suite 增加拓扑加载/保存/发布界面，为 Plan 增加发布和手动触发界面。
+3. 将策略配置页升级为 Vue Flow 画布，支持 Case 拖拽、Edge 连线和条件编辑。
+4. 增加执行日志详情、自动刷新和按 Plan/日期筛选。
+5. 最后实现数据源 K 线页面、实时快照和首页业务摘要。
 
 ---
 
