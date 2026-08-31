@@ -314,6 +314,94 @@
   - 用户自定义
 - 该模块为只读展示，不提供增删改。
 
+## 二.10 前端模块与后端 API 对照
+
+以下为前端各模块对应的后端接口清单，确保文档与真实 Django API 保持一致。
+
+### 2.10.1 用户认证模块
+- 登录：`POST /api/users/login/`
+- 注册：`POST /api/users/register/`
+- 登出：`POST /api/users/logout/`
+- 当前用户信息：`GET /api/users/profile/`
+- 修改个人资料：`PATCH /api/users/profile/`
+- 角色管理：`POST /api/users/<user_id>/roles/`（管理员用，前端本期可按需适配）
+
+### 2.10.2 标的（Symbol）管理模块
+- 列表与筛选：`GET /api/watchlists/symbols/`
+- 创建标的：`POST /api/watchlists/symbols/`
+- 更新标的：`PATCH /api/watchlists/symbols/<id>/`
+- 删除标的：`DELETE /api/watchlists/symbols/<id>/`
+- 批量同步：`POST /api/watchlists/symbols/sync/`
+- 批量导入：`POST /api/watchlists/symbols/batch-import/`
+
+### 2.10.3 分组（Group）管理模块
+- 分组列表：`GET /api/watchlists/groups/`
+- 新增分组：`POST /api/watchlists/groups/`
+- 更新分组：`PATCH /api/watchlists/groups/<id>/`
+- 删除分组：`DELETE /api/watchlists/groups/<id>/`
+- 管理分组标的：`POST /api/watchlists/groups/<id>/add-symbols/`
+- 移除分组标的：`POST /api/watchlists/groups/<id>/remove-symbols/`
+- 当前用户自选池：`GET /api/watchlists/watchlist/`、`PATCH /api/watchlists/watchlist/`
+
+### 2.10.4 数据源管理模块
+- 数据源列表：`GET /api/datasources/sources/`
+- 新增数据源：`POST /api/datasources/sources/`
+- 更新数据源：`PATCH /api/datasources/sources/<id>/`
+- 删除数据源：`DELETE /api/datasources/sources/<id>/`
+- 实时快照列表：`GET /api/datasources/snapshots/`
+- K 线同步日志：`GET /api/datasources/sync-logs/`
+- 查询 K 线数据：`GET /api/datasources/kline/query/`
+- 触发 K 线同步：`POST /api/datasources/kline/sync/`
+
+### 2.10.5 Case 管理模块
+- Case 列表：`GET /api/cases/`
+- 新增 Case：`POST /api/cases/`
+- 更新 Case：`PATCH /api/cases/<id>/`
+- 删除 Case：`DELETE /api/cases/<id>/`
+- 发布 Case：`POST /api/cases/<id>/publish/`
+- Case 历史版本：`GET /api/cases/<id>/versions/`
+
+### 2.10.6 Suite 管理模块
+- Suite 列表：`GET /api/suites/`
+- 新增 Suite：`POST /api/suites/`
+- 更新 Suite：`PATCH /api/suites/<id>/`
+- 删除 Suite：`DELETE /api/suites/<id>/`
+- 查看拓扑：`GET /api/suites/<id>/topology/`
+- 更新拓扑：`POST /api/suites/<id>/topology/`
+- 发布 Suite：`POST /api/suites/<id>/publish/`
+
+### 2.10.7 Plan 管理模块
+- Plan 列表：`GET /api/plans/`
+- 新增 Plan：`POST /api/plans/`
+- 更新 Plan：`PATCH /api/plans/<id>/`
+- 删除 Plan：`DELETE /api/plans/<id>/`
+- 发布 Plan：`POST /api/plans/<id>/publish/`
+- 解析 Plan 标的范围：`GET /api/plans/<id>/symbols/`
+- Plan 版本记录：`GET /api/plans/<id>/versions/`
+
+### 2.10.8 执行日志模块
+- 执行日志列表：`GET /api/execution/logs/`
+- 委托单列表：`GET /api/execution/orders/`
+- 运行记录列表：`GET /api/execution/runs/`
+- 触发执行：`POST /api/execution/trigger/`
+
+### 2.10.9 触发执行模块
+- 手动触发 Plan：`POST /api/execution/trigger/`
+- 查询运行状态：`GET /api/execution/run/<run_id>/`
+- 启动执行：`POST /api/execution/run/<run_id>/start/`
+- 处理事件：`POST /api/execution/run/<run_id>/process/`
+
+### 2.10.10 事件类型管理模块
+- 事件类型列表：`GET /api/execution/event-types/list-all/`
+- 事件类型 CRUD：`GET /api/execution/event-types/`、`POST /api/execution/event-types/`、`PATCH /api/execution/event-types/<id>/`、`DELETE /api/execution/event-types/<id>/`
+- 说明：当前前端为只读展示，优先使用 `list-all` 接口，避免直接操作管理型接口。
+
+### 2.10.11 接口使用约束
+- 所有前端页面应按上述接口路径访问后端，不得凭空新增与后端不一致的 URL。
+- 所有非 GET 请求都必须携带 Django CSRF Token；同源 Session Cookie 需保持开启。
+- 页面初始化时，应优先调用当前登录态接口，并在失败时跳转到登录页。
+- 需要统一处理响应结构、分页、错误提示与空状态。
+
 ## 三、交互与反馈要求
 
 1. 所有异步操作（加载、提交、删除等）应有明确的加载状态。可使用按钮 Loading、骨架屏或文本提示。

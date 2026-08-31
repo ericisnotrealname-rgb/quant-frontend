@@ -25,6 +25,10 @@
             <el-icon><Folder /></el-icon>
             <template #title>分组管理</template>
           </el-menu-item>
+          <el-menu-item index="/datasources">
+            <el-icon><DataAnalysis /></el-icon>
+            <template #title>数据源管理</template>
+          </el-menu-item>
           <el-menu-item index="/cases">
             <el-icon><Document /></el-icon>
             <template #title>Case 管理</template>

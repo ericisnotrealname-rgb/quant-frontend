@@ -33,6 +33,12 @@ const router = createRouter({
       meta: { title: '分组管理', requiresAuth: true },
     },
     {
+      path: '/datasources',
+      name: 'datasources',
+      component: () => import('@/views/Datasources.vue'),
+      meta: { title: '数据源管理', requiresAuth: true },
+    },
+    {
       path: '/cases',
       name: 'cases',
       component: () => import('@/views/Cases.vue'),
