@@ -48,6 +48,18 @@ export interface KLineSyncLogItem {
   created_at: string
 }
 
+export interface KLineQueryItem {
+  symbol: string
+  date: string
+  open: string | number
+  high: string | number
+  low: string | number
+  close: string | number
+  volume: number
+  amount: string | number | null
+  extra: Record<string, unknown>
+}
+
 export const datasourcesApi = {
   sources(params?: Record<string, unknown>) {
     return api.get<DataSourceItem[]>('/datasources/sources/', { params })
@@ -68,9 +80,15 @@ export const datasourcesApi = {
     return api.get<KLineSyncLogItem[]>('/datasources/sync-logs/', { params })
   },
   queryKline(params: { symbol: string; start: string; end: string }) {
-    return api.get('/datasources/kline/query/', { params })
+    return api.get<KLineQueryItem[]>('/datasources/kline/query/', { params })
   },
-  syncKline(data: Record<string, unknown>) {
-    return api.post('/datasources/kline/sync/', data)
+  syncKline(data: {
+    symbol: string
+    sync_type?: string
+    start_date?: string
+    end_date?: string
+    adjust?: string
+  }) {
+    return api.post<{ symbol: string; added: number; skipped: number; error: string | null }>('/datasources/kline/sync/', data)
   },
 }

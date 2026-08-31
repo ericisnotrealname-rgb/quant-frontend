@@ -4,7 +4,7 @@
       <div>
         <span class="eyebrow">DATASOURCES</span>
         <h1>数据源管理</h1>
-        <p>配置第三方行情数据源、查看快照与同步日志，并按标的查询 K 线数据。</p>
+        <p>配置第三方行情数据源、查看快照与同步日志，并按标的手动拉取和更新 K 线数据。</p>
       </div>
       <el-button type="primary" @click="openDialog()">新增数据源</el-button>
     </div>
@@ -79,6 +79,55 @@
       </el-col>
     </el-row>
 
+    <el-card class="card-block sync-card">
+      <template #header>
+        <div class="card-title">按标的手动同步 K 线数据</div>
+      </template>
+
+      <el-form :model="syncForm" inline class="sync-form">
+        <el-form-item label="标的">
+          <el-select v-model="syncForm.symbol" placeholder="请选择标的" clearable style="width: 180px">
+            <el-option
+              v-for="symbol in symbolOptions"
+              :key="symbol.id"
+              :label="`${symbol.code} ${symbol.name}`"
+              :value="symbol.code"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="同步类型">
+          <el-select v-model="syncForm.sync_type" style="width: 140px">
+            <el-option label="日线" value="daily" />
+            <el-option label="分钟线" value="minute" disabled />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="开始日期">
+          <el-date-picker v-model="syncForm.start_date" type="date" value-format="YYYY-MM-DD" style="width: 150px" />
+        </el-form-item>
+        <el-form-item label="结束日期">
+          <el-date-picker v-model="syncForm.end_date" type="date" value-format="YYYY-MM-DD" style="width: 150px" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="syncLoading" @click="handleSyncKline">拉取并更新</el-button>
+        </el-form-item>
+        <el-form-item>
+          <el-button plain @click="handleQueryKline">查询 K 线</el-button>
+        </el-form-item>
+      </el-form>
+
+      <div v-if="klineRows.length" class="kline-table-wrap">
+        <el-table :data="klineRows.slice(0, 10)" stripe>
+          <el-table-column prop="date" label="日期" width="120" />
+          <el-table-column prop="open" label="开盘" width="100" />
+          <el-table-column prop="high" label="最高" width="100" />
+          <el-table-column prop="low" label="最低" width="100" />
+          <el-table-column prop="close" label="收盘" width="100" />
+          <el-table-column prop="volume" label="成交量" width="120" />
+        </el-table>
+      </div>
+      <el-empty v-else description="请选择标的并查询 / 更新 K 线数据" :image-size="80" />
+    </el-card>
+
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑数据源' : '新增数据源'" width="560px">
       <el-form :model="form" label-width="110px">
         <el-form-item label="数据源名称" required>
@@ -117,15 +166,20 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { datasourcesApi } from '@/api/datasources'
-import type { DataSourceItem, KLineSyncLogItem, RealtimeSnapshotItem } from '@/api/datasources'
+import { watchlistsApi } from '@/api/watchlists'
+import type { DataSourceItem, KLineQueryItem, KLineSyncLogItem, RealtimeSnapshotItem } from '@/api/datasources'
+import type { SymbolItem } from '@/types/api'
 
 const sources = ref<DataSourceItem[]>([])
 const snapshots = ref<RealtimeSnapshotItem[]>([])
 const syncLogs = ref<KLineSyncLogItem[]>([])
+const symbolOptions = ref<SymbolItem[]>([])
+const klineRows = ref<KLineQueryItem[]>([])
 const loading = ref(false)
 const snapshotLoading = ref(false)
 const logsLoading = ref(false)
 const saving = ref(false)
+const syncLoading = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const keyword = ref('')
@@ -139,6 +193,12 @@ const form = ref({
   is_active: true,
 })
 const authInfoText = ref('{}')
+const syncForm = ref({
+  symbol: '',
+  sync_type: 'daily',
+  start_date: '',
+  end_date: '',
+})
 
 const filteredSources = computed(() => {
   return sources.value.filter((item) => {
@@ -294,8 +354,96 @@ function syncStatusType(value: string) {
   return ({ success: 'success', failed: 'danger', partial: 'warning' } as Record<string, string>)[value] || 'info'
 }
 
+function defaultDateRange() {
+  const end = new Date()
+  const start = new Date()
+  start.setDate(end.getDate() - 30)
+
+  const format = (date: Date) => date.toISOString().slice(0, 10)
+  syncForm.value.start_date = format(start)
+  syncForm.value.end_date = format(end)
+}
+
+async function loadSymbols() {
+  try {
+    const response = await watchlistsApi.symbols({ limit: 500 })
+    symbolOptions.value = response.data
+    if (!syncForm.value.symbol && response.data[0]) {
+      syncForm.value.symbol = response.data[0].code
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('标的列表加载失败')
+  }
+}
+
+async function handleSyncKline() {
+  if (!syncForm.value.symbol) {
+    ElMessage.warning('请选择一个标的再同步数据')
+    return
+  }
+
+  if (!syncForm.value.start_date || !syncForm.value.end_date) {
+    ElMessage.warning('请选择开始和结束日期')
+    return
+  }
+
+  syncLoading.value = true
+  try {
+    const response = await datasourcesApi.syncKline({
+      symbol: syncForm.value.symbol,
+      sync_type: syncForm.value.sync_type,
+      start_date: syncForm.value.start_date,
+      end_date: syncForm.value.end_date,
+      adjust: 'qfq',
+    })
+
+    const { added, skipped, error } = response.data
+    ElMessage.success(`同步完成：新增 ${added} 条，跳过 ${skipped} 条`)
+    if (error) {
+      ElMessage.warning(error)
+    }
+
+    await Promise.all([loadSyncLogs(), handleQueryKline(false)])
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('手动同步失败')
+  } finally {
+    syncLoading.value = false
+  }
+}
+
+async function handleQueryKline(showMessage = true) {
+  if (!syncForm.value.symbol) {
+    ElMessage.warning('请选择一个标的后再查询')
+    return
+  }
+
+  if (!syncForm.value.start_date || !syncForm.value.end_date) {
+    ElMessage.warning('查询前请先选择日期范围')
+    return
+  }
+
+  try {
+    const response = await datasourcesApi.queryKline({
+      symbol: syncForm.value.symbol,
+      start: syncForm.value.start_date,
+      end: syncForm.value.end_date,
+    })
+    klineRows.value = response.data
+
+    if (showMessage) {
+      ElMessage.success(`已查询到 ${response.data.length} 条 K 线记录`)
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('K 线查询失败')
+  }
+}
+
 onMounted(async () => {
-  await Promise.all([loadSources(), loadSnapshots(), loadSyncLogs()])
+  defaultDateRange()
+  await Promise.all([loadSources(), loadSnapshots(), loadSyncLogs(), loadSymbols()])
 })
 </script>
 
@@ -309,4 +457,7 @@ p { color: #667085; }
 .card-block { margin-bottom: 16px; }
 .section-row { margin-top: 8px; }
 .card-title { font-weight: 700; }
+.sync-card { margin-top: 16px; }
+.sync-form { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.kline-table-wrap { margin-top: 16px; }
 </style>
