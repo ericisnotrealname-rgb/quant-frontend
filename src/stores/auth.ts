@@ -1,15 +1,17 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { usersApi, type UserProfile } from '@/api/users'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<UserProfile | null>(null)
   const loading = ref(false)
+  const isAuthenticated = computed(() => Boolean(user.value))
 
   async function loadProfile() {
     loading.value = true
     try {
-      user.value = (await usersApi.profile()).data
+      const response = await usersApi.profile()
+      user.value = response.data
       return user.value
     } catch {
       user.value = null
@@ -20,7 +22,9 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(username: string, password: string) {
-    user.value = (await usersApi.login(username, password)).data
+    const response = await usersApi.login(username, password)
+    user.value = response.data
+    return response.data
   }
 
   async function logout() {
@@ -28,5 +32,5 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
   }
 
-  return { user, loading, loadProfile, login, logout }
+  return { user, loading, isAuthenticated, loadProfile, login, logout }
 })
