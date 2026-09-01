@@ -356,6 +356,9 @@
 #### 2.10.4.1 通过 watchlists Symbol 拉取并更新数据源
 - 前端优先从 `GET /api/watchlists/symbols/` 获取 Symbol 列表，用户在页面中选择一个 Symbol。
 - 选择后，前端通过 `GET /api/datasources/kline/query/?symbol=<code>&start=<date>&end=<date>` 拉取该标的 K 线数据并展示。
+- 页面使用 Apache ECharts（Canvas 渲染）绘制主图 K 线蜡烛图，并叠加 MA5 / MA10 / MA20 均线；主图支持缩放、交叉提示和分时数据查看。
+- 成交量为可选附图，默认打开；同时支持可选显示 MACD、KDJ、RSI 的独立子图，且各指标采用分图堆叠显示。
+- 附图设计为“按需显示”，通过页面勾选控制 `成交量 / MACD / KDJ / RSI` 是否打开；指标图表通过独立 grid 分层渲染，便于对照主图走势。
 - 用户点击“更新数据源”后，前端调用 `POST /api/datasources/kline/sync/`，参数包含 `symbol`、`sync_type`、`start_date`、`end_date`、`adjust`。
 - 更新成功后自动刷新同步日志与当前 K 线结果，确保界面与后端数据同步。
 - 该流程的核心数据源是 `watchlists.symbol`，而非直接假定 DataSource 记录绑定了 Symbol；因此前端必须以 `Symbol.code` 作为查询/同步标识。
@@ -455,6 +458,7 @@
 - 状态管理：Pinia
 - UI：Element Plus
 - HTTP：Axios
+- 图表：Apache ECharts（Canvas 渲染，适用于 K 线、成交量和分时场景）
 - 生产构建：Vite
 
 ### 7.2 接口约束

@@ -115,15 +115,15 @@
         </el-form-item>
       </el-form>
 
-      <div v-if="klineRows.length" class="kline-table-wrap">
-        <el-table :data="klineRows.slice(0, 10)" stripe>
-          <el-table-column prop="date" label="日期" width="120" />
-          <el-table-column prop="open" label="开盘" width="100" />
-          <el-table-column prop="high" label="最高" width="100" />
-          <el-table-column prop="low" label="最低" width="100" />
-          <el-table-column prop="close" label="收盘" width="100" />
-          <el-table-column prop="volume" label="成交量" width="120" />
-        </el-table>
+      <div v-if="klineRows.length" class="kline-chart-wrap">
+        <div class="chart-toolbar">
+          <el-checkbox v-model="showMa">显示 MA</el-checkbox>
+          <el-checkbox v-model="showVolume">显示成交量</el-checkbox>
+          <el-checkbox v-model="showMacd">显示 MACD</el-checkbox>
+          <el-checkbox v-model="showKdj">显示 KDJ</el-checkbox>
+          <el-checkbox v-model="showRsi">显示 RSI</el-checkbox>
+        </div>
+        <div ref="chartRef" :style="{ height: chartHeight }" class="kline-chart" />
       </div>
       <el-empty v-else description="请选择标的并查询 / 更新 K 线数据" :image-size="80" />
     </el-card>
@@ -163,8 +163,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import * as echarts from 'echarts'
 import { datasourcesApi } from '@/api/datasources'
 import { watchlistsApi } from '@/api/watchlists'
 import type { DataSourceItem, KLineQueryItem, KLineSyncLogItem, RealtimeSnapshotItem } from '@/api/datasources'
@@ -184,6 +185,8 @@ const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const keyword = ref('')
 const activeFilter = ref<boolean | ''>('')
+const chartRef = ref<HTMLElement | null>(null)
+let chartInstance: echarts.ECharts | null = null
 
 const form = ref({
   name: '',
@@ -198,6 +201,21 @@ const syncForm = ref({
   sync_type: 'daily',
   start_date: '',
   end_date: '',
+})
+const showMa = ref(true)
+const showVolume = ref(true)
+const showMacd = ref(false)
+const showKdj = ref(false)
+const showRsi = ref(false)
+
+// ================= 修复：动态计算总高度（包含底部滑块空间） =================
+const chartHeight = computed(() => {
+  const mainHeight = 280
+  const panelHeight = 100
+  const gap = 10 // 单独分图之间的间距
+  const bottomOffset = 60 // 给底部 dataZoom 滑块预留空间，防止遮挡
+  const extra = (showVolume.value ? 1 : 0) + (showMacd.value ? 1 : 0) + (showKdj.value ? 1 : 0) + (showRsi.value ? 1 : 0)
+  return `${20 + mainHeight + extra * (panelHeight + gap) + bottomOffset}px` // 20 为顶部 legend 预留空间
 })
 
 const filteredSources = computed(() => {
@@ -441,6 +459,521 @@ function syncStatusType(value: string) {
   return ({ success: 'success', failed: 'danger', partial: 'warning' } as Record<string, string>)[value] || 'info'
 }
 
+function toNumber(value: string | number | null | undefined) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function calculateMA(data: KLineQueryItem[], period: number) {
+  const result: Array<number | null> = []
+  for (let i = 0; i < data.length; i += 1) {
+    if (i < period - 1) {
+      result.push(null)
+      continue
+    }
+    const slice = data.slice(i - period + 1, i + 1)
+    const avg = slice.reduce((sum, item) => sum + toNumber(item.close), 0) / period
+    result.push(Number(avg.toFixed(4)))
+  }
+  return result
+}
+
+function calculateVolumeColor(close: number, open: number) {
+  return close >= open ? '#26a69a' : '#ef5350'
+}
+
+function calculateMACD(data: KLineQueryItem[]) {
+  const ema = (values: number[], period: number) => {
+    const out: number[] = []
+    const k = 2 / (period + 1)
+    values.forEach((value, index) => {
+      if (index === 0) {
+        out.push(value)
+      } else {
+        out.push(value * k + out[index - 1] * (1 - k))
+      }
+    })
+    return out
+  }
+
+  const closes = data.map((item) => toNumber(item.close))
+  const ema12 = ema(closes, 12)
+  const ema26 = ema(closes, 26)
+  const dif = closes.map((_, index) => Number((ema12[index] - ema26[index]).toFixed(4)))
+  const deaValues: number[] = []
+  for (let i = 0; i < dif.length; i += 1) {
+    if (i === 0) {
+      deaValues.push(dif[i])
+    } else {
+      const prev = deaValues[i - 1] ?? dif[i - 1]
+      const next = dif[i] * (2 / (9 + 1)) + prev * (1 - 2 / (9 + 1))
+      deaValues.push(Number(next.toFixed(4)))
+    }
+  }
+  const macd = dif.map((value, index) => Number(((value - (deaValues[index] ?? value)) * 2).toFixed(4)))
+  return { dif, dea: deaValues, macd }
+}
+
+function calculateRSI(data: KLineQueryItem[], period = 14) {
+  const closes = data.map((item) => toNumber(item.close))
+  const result: Array<number | null> = []
+  for (let i = 0; i < closes.length; i += 1) {
+    if (i === 0) {
+      result.push(50)
+      continue
+    }
+
+    let gains = 0
+    let losses = 0
+    for (let j = Math.max(0, i - period + 1); j <= i; j += 1) {
+      const delta = closes[j] - closes[j - 1 < 0 ? j : j - 1]
+      if (delta >= 0) gains += delta
+      else losses += Math.abs(delta)
+    }
+
+    if (i < period) {
+      result.push(50)
+      continue
+    }
+
+    const rs = losses === 0 ? 100 : gains / losses
+    result.push(Number((100 - 100 / (1 + rs)).toFixed(4)))
+  }
+  return result
+}
+
+function calculateKDJ(data: KLineQueryItem[], period = 9) {
+  const closes = data.map((item) => toNumber(item.close))
+  const highs = data.map((item) => toNumber(item.high))
+  const lows = data.map((item) => toNumber(item.low))
+  const kValues: Array<number | null> = []
+  const dValues: Array<number | null> = []
+  const jValues: Array<number | null> = []
+
+  for (let i = 0; i < data.length; i += 1) {
+    const start = Math.max(0, i - period + 1)
+    const windowHigh = Math.max(...highs.slice(start, i + 1))
+    const windowLow = Math.min(...lows.slice(start, i + 1))
+    const rsv = windowHigh === windowLow ? 50 : ((closes[i] - windowLow) / (windowHigh - windowLow)) * 100
+
+    if (i === 0) {
+      kValues.push(50)
+      dValues.push(50)
+      jValues.push(50)
+      continue
+    }
+
+    const prevK = kValues[i - 1] ?? 50
+    const prevD = dValues[i - 1] ?? 50
+    const k = rsv * 1 / 3 + prevK * 2 / 3
+    const d = k * 1 / 3 + prevD * 2 / 3
+    const j = 3 * k - 2 * d
+
+    kValues.push(Number(k.toFixed(4)))
+    dValues.push(Number(d.toFixed(4)))
+    jValues.push(Number(j.toFixed(4)))
+  }
+
+  return { k: kValues, d: dValues, j: jValues }
+}
+
+function renderKlineChart(rows: KLineQueryItem[]) {
+  if (!chartRef.value) return
+
+  if (!chartInstance) {
+    chartInstance = echarts.init(chartRef.value)
+  }
+
+  const sortedRows = [...rows].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+  const dates = sortedRows.map((item) => item.date)
+  const candleData = sortedRows.map((item) => [
+    toNumber(item.open),
+    toNumber(item.close),
+    toNumber(item.low),
+    toNumber(item.high),
+  ])
+  const ma5 = calculateMA(sortedRows, 5)
+  const ma10 = calculateMA(sortedRows, 10)
+  const ma20 = calculateMA(sortedRows, 20)
+  const volumeData = sortedRows.map((item) => ({
+    value: toNumber(item.volume),
+    itemStyle: {
+      color: calculateVolumeColor(toNumber(item.close), toNumber(item.open)),
+    },
+  }))
+  const { dif, dea, macd } = calculateMACD(sortedRows)
+  const { k, d, j } = calculateKDJ(sortedRows)
+  const rsi = calculateRSI(sortedRows)
+
+  // ================= 修改：动态计算 Y 轴最大/最小值并预留高度 + 取整 =================
+  // MACD：围绕 0 轴对称，取绝对值最大的一项，并预留 20% 的余量，向上取整
+  const macdMaxAbs = Math.ceil(
+    Math.max(
+      ...dif.map(Math.abs),
+      ...dea.map(Math.abs),
+      ...macd.map(Math.abs)
+    ) * 1.2
+  )
+
+  // KDJ：基于基础范围 0-100，如数据超出则动态扩充边界，并预留 15% 空间
+  const kdjMax = Math.max(...k.filter(v => v !== null), ...d.filter(v => v !== null), ...j.filter(v => v !== null))
+  const kdjMin = Math.min(...k.filter(v => v !== null), ...d.filter(v => v !== null), ...j.filter(v => v !== null))
+  const kdjRange = kdjMax - kdjMin
+  const kdjBoundaryMax = Math.ceil(Math.max(100, kdjMax + kdjRange * 0.15)) // 向上取整
+  const kdjBoundaryMin = Math.floor(Math.min(0, kdjMin - kdjRange * 0.15)) // 向下取整
+
+  // RSI：基于基础范围 0-100，如数据超出则动态扩充边界，并预留 15% 空间
+  const rsiMax = Math.max(...rsi.filter(v => v !== null))
+  const rsiMin = Math.min(...rsi.filter(v => v !== null))
+  const rsiRange = rsiMax - rsiMin
+  const rsiBoundaryMax = Math.ceil(Math.max(100, rsiMax + rsiRange * 0.15)) // 向上取整
+  const rsiBoundaryMin = Math.floor(Math.min(0, rsiMin - rsiRange * 0.15)) // 向下取整
+  // ==============================================================================
+
+  // 独立分图构建，确保取消勾选后彻底隐藏且自动向上排布
+  const grids: any[] = []
+  let currentTop = 20
+  const mainHeight = 280
+  const panelHeight = 100
+  const gap = 10 // 独立分图之间的间隙
+
+  // 主K线图
+  grids.push({ left: 16, right: 16, top: currentTop, height: mainHeight, containLabel: true })
+  currentTop += mainHeight + gap
+
+  // 成交量
+  if (showVolume.value) {
+    grids.push({ left: 16, right: 16, top: currentTop, height: panelHeight, containLabel: true })
+    currentTop += panelHeight + gap
+  }
+
+  // MACD
+  if (showMacd.value) {
+    grids.push({ left: 16, right: 16, top: currentTop, height: panelHeight, containLabel: true })
+    currentTop += panelHeight + gap
+  }
+
+  // KDJ
+  if (showKdj.value) {
+    grids.push({ left: 16, right: 16, top: currentTop, height: panelHeight, containLabel: true })
+    currentTop += panelHeight + gap
+  }
+
+  // RSI
+  if (showRsi.value) {
+    grids.push({ left: 16, right: 16, top: currentTop, height: panelHeight, containLabel: true })
+    currentTop += panelHeight + gap
+  }
+
+  const xAxis: any[] = [{
+    type: 'category',
+    data: dates,
+    boundaryGap: false,
+    axisLine: { lineStyle: { color: '#d9dee8' } },
+    axisTick: { show: false },
+    axisLabel: { color: '#667085', fontSize: 10 },
+    splitLine: { show: false },
+  }]
+  const yAxis: any[] = [{
+    type: 'value',
+    scale: true,
+    boundaryGap: [0.01, 0.01],
+    axisLabel: { color: '#667085' },
+    splitLine: { lineStyle: { color: '#edf1f7' } },
+  }]
+  const series: any[] = [{
+    name: 'K线',
+    type: 'candlestick',
+    data: candleData,
+    itemStyle: {
+      color: '#26a69a',
+      color0: '#ef5350',
+      borderColor: '#26a69a',
+      borderColor0: '#ef5350',
+    },
+    xAxisIndex: 0,
+    yAxisIndex: 0,
+  }]
+
+  if (showMa.value) {
+    const maSeries = [
+      { name: 'MA5', data: ma5, color: '#7c4dff' },
+      { name: 'MA10', data: ma10, color: '#ffb300' },
+      { name: 'MA20', data: ma20, color: '#29b6f6' },
+    ]
+    maSeries.forEach((item) => {
+      series.push({
+        name: item.name,
+        type: 'line',
+        smooth: true,
+        data: item.data,
+        lineStyle: { width: 1.5, color: item.color },
+        symbol: 'none',
+      })
+    })
+  }
+
+  // 动态记录当前附图索引，保证和 grids 数组索引对应
+  let currentGridIndex = 1
+  let currentAxisIndex = 1
+
+  // 1: 成交量
+  if (showVolume.value) {
+    xAxis.push({
+      type: 'category',
+      gridIndex: currentGridIndex,
+      data: dates,
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: '#d9dee8' } },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: { show: false },
+    })
+    yAxis.push({
+      type: 'value',
+      gridIndex: currentGridIndex,
+      scale: true,
+      axisLabel: { color: '#667085', formatter: (value: number) => `${(value / 10000).toFixed(1)}w` },
+      splitLine: { lineStyle: { color: '#edf1f7' } },
+    })
+    series.push({
+      name: '成交量',
+      type: 'bar',
+      xAxisIndex: currentAxisIndex,
+      yAxisIndex: currentAxisIndex,
+      data: volumeData,
+      barWidth: '60%',
+      itemStyle: {
+        color: (params: any) => {
+          const index = params.dataIndex
+          const current = sortedRows[index]
+          if (!current) return '#26a69a'
+          return calculateVolumeColor(toNumber(current.close), toNumber(current.open))
+        },
+      },
+    })
+    currentGridIndex++
+    currentAxisIndex++
+  }
+
+  // 2: MACD (应用动态 Y 轴配置)
+  if (showMacd.value) {
+    xAxis.push({
+      type: 'category',
+      gridIndex: currentGridIndex,
+      data: dates,
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: '#d9dee8' } },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: { show: false },
+    })
+    yAxis.push({
+      type: 'value',
+      gridIndex: currentGridIndex,
+      axisLabel: { color: '#667085' },
+      max: macdMaxAbs, // 向上取整后传入，负数取反即为向下取整
+      min: -macdMaxAbs, 
+      splitLine: { lineStyle: { color: '#edf1f7' } },
+    })
+    series.push({
+      name: 'DIF',
+      type: 'line',
+      xAxisIndex: currentAxisIndex,
+      yAxisIndex: currentAxisIndex,
+      data: dif,
+      smooth: true,
+      lineStyle: { width: 1.5, color: '#5b8def' },
+      symbol: 'none',
+    })
+    series.push({
+      name: 'DEA',
+      type: 'line',
+      xAxisIndex: currentAxisIndex,
+      yAxisIndex: currentAxisIndex,
+      data: dea,
+      smooth: true,
+      lineStyle: { width: 1.5, color: '#f59e0b' },
+      symbol: 'none',
+    })
+    series.push({
+      name: 'MACD',
+      type: 'bar',
+      xAxisIndex: currentAxisIndex,
+      yAxisIndex: currentAxisIndex,
+      data: macd,
+      barWidth: '60%',
+      itemStyle: {
+        color: (params: any) => (params.data >= 0 ? '#26a69a' : '#ef5350'),
+      },
+    })
+    currentGridIndex++
+    currentAxisIndex++
+  }
+
+  // 3: KDJ (应用动态 Y 轴配置)
+  if (showKdj.value) {
+    xAxis.push({
+      type: 'category',
+      gridIndex: currentGridIndex,
+      data: dates,
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: '#d9dee8' } },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: { show: false },
+    })
+    yAxis.push({
+      type: 'value',
+      gridIndex: currentGridIndex,
+      min: kdjBoundaryMin, // 向下取整
+      max: kdjBoundaryMax, // 向上取整
+      axisLabel: { color: '#667085' },
+      splitLine: { lineStyle: { color: '#edf1f7' } },
+    })
+    series.push({
+      name: 'K',
+      type: 'line',
+      xAxisIndex: currentAxisIndex,
+      yAxisIndex: currentAxisIndex,
+      data: k,
+      smooth: true,
+      lineStyle: { width: 1.5, color: '#ec4899' },
+      symbol: 'none',
+    })
+    series.push({
+      name: 'D',
+      type: 'line',
+      xAxisIndex: currentAxisIndex,
+      yAxisIndex: currentAxisIndex,
+      data: d,
+      smooth: true,
+      lineStyle: { width: 1.5, color: '#8b5cf6' },
+      symbol: 'none',
+    })
+    series.push({
+      name: 'J',
+      type: 'line',
+      xAxisIndex: currentAxisIndex,
+      yAxisIndex: currentAxisIndex,
+      data: j,
+      smooth: true,
+      lineStyle: { width: 1.5, color: '#f97316' },
+      symbol: 'none',
+    })
+    currentGridIndex++
+    currentAxisIndex++
+  }
+
+  // 4: RSI (应用动态 Y 轴配置)
+  if (showRsi.value) {
+    xAxis.push({
+      type: 'category',
+      gridIndex: currentGridIndex,
+      data: dates,
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: '#d9dee8' } },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: { show: false },
+    })
+    yAxis.push({
+      type: 'value',
+      gridIndex: currentGridIndex,
+      min: rsiBoundaryMin, // 向下取整
+      max: rsiBoundaryMax, // 向上取整
+      axisLabel: { color: '#667085' },
+      splitLine: { lineStyle: { color: '#edf1f7' } },
+    })
+    series.push({
+      name: 'RSI',
+      type: 'line',
+      xAxisIndex: currentAxisIndex,
+      yAxisIndex: currentAxisIndex,
+      data: rsi,
+      smooth: true,
+      lineStyle: { width: 1.5, color: '#10b981' },
+      symbol: 'none',
+    })
+    series.push({
+      name: 'RSI 70',
+      type: 'line',
+      xAxisIndex: currentAxisIndex,
+      yAxisIndex: currentAxisIndex,
+      data: Array(dates.length).fill(70),
+      lineStyle: { width: 1, color: '#f59e0b', type: 'dashed' },
+      symbol: 'none',
+      silent: true,
+    })
+    series.push({
+      name: 'RSI 30',
+      type: 'line',
+      xAxisIndex: currentAxisIndex,
+      yAxisIndex: currentAxisIndex,
+      data: Array(dates.length).fill(30),
+      lineStyle: { width: 1, color: '#6b7280', type: 'dashed' },
+      symbol: 'none',
+      silent: true,
+    })
+  }
+
+  // 传入 true (notMerge) 强制全量重绘，彻底消除隐藏后残留的旧图重叠
+  chartInstance.setOption({
+    backgroundColor: '#fff',
+    animation: false,
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross' },
+      backgroundColor: 'rgba(17, 24, 39, 0.88)',
+      borderWidth: 0,
+      textStyle: { color: '#fff' },
+    },
+    legend: {
+      top: 0,
+      left: 'center',
+      data: series.filter((item) => item.name && !['RSI 70', 'RSI 30'].includes(item.name)).map((item) => item.name),
+      textStyle: { fontSize: 11 },
+    },
+    grid: grids,
+    xAxis,
+    yAxis,
+    dataZoom: [
+      {
+        type: 'inside',
+        start: 60,
+        end: 100,
+        xAxisIndex: xAxis.map((_, i) => i),
+      },
+      {
+        type: 'slider',
+        show: true,
+        start: 60,
+        end: 100,
+        bottom: 10,
+      },
+    ],
+    series,
+  }, true)
+}
+
+// ================= 修复：监听 chartHeight 变化，并调用 resize 使图表自适应 =================
+watch(
+  [klineRows, showVolume, showMacd, showKdj, showRsi, chartHeight],
+  ([rows]) => {
+    if (rows.length) {
+      nextTick(() => {
+        renderKlineChart(rows)
+        chartInstance?.resize() // 高度变化后强制重绘，防止变形重叠
+      })
+    }
+  },
+  { deep: true },
+)
+
+onBeforeUnmount(() => {
+  chartInstance?.dispose()
+})
+
 onMounted(async () => {
   defaultDateRange()
   await Promise.all([loadSources(), loadSnapshots(), loadSyncLogs(), loadSymbolOptions()])
@@ -459,5 +992,7 @@ p { color: #667085; }
 .card-title { font-weight: 700; }
 .sync-card { margin-top: 16px; }
 .sync-form { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.kline-table-wrap { margin-top: 16px; }
+.kline-chart-wrap { margin-top: 16px; }
+.chart-toolbar { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.kline-chart { width: 100%; min-height: 420px; }
 </style>
