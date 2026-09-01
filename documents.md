@@ -353,6 +353,13 @@
 - 查询 K 线数据：`GET /api/datasources/kline/query/`
 - 触发 K 线同步：`POST /api/datasources/kline/sync/`
 
+#### 2.10.4.1 通过 watchlists Symbol 拉取并更新数据源
+- 前端优先从 `GET /api/watchlists/symbols/` 获取 Symbol 列表，用户在页面中选择一个 Symbol。
+- 选择后，前端通过 `GET /api/datasources/kline/query/?symbol=<code>&start=<date>&end=<date>` 拉取该标的 K 线数据并展示。
+- 用户点击“更新数据源”后，前端调用 `POST /api/datasources/kline/sync/`，参数包含 `symbol`、`sync_type`、`start_date`、`end_date`、`adjust`。
+- 更新成功后自动刷新同步日志与当前 K 线结果，确保界面与后端数据同步。
+- 该流程的核心数据源是 `watchlists.symbol`，而非直接假定 DataSource 记录绑定了 Symbol；因此前端必须以 `Symbol.code` 作为查询/同步标识。
+
 ### 2.10.5 Case 管理模块
 - Case 列表：`GET /api/cases/`
 - 新增 Case：`POST /api/cases/`

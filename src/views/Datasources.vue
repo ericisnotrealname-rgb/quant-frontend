@@ -246,6 +246,16 @@ function sourceTypeTag(type: string) {
   return ({ akshare: 'primary', tushare: 'warning', tdx: 'info', yfinance: 'success' } as Record<string, string>)[type] || 'info'
 }
 
+function defaultDateRange() {
+  const end = new Date()
+  const start = new Date()
+  start.setDate(end.getDate() - 30)
+
+  const format = (date: Date) => date.toISOString().slice(0, 10)
+  syncForm.value.start_date = format(start)
+  syncForm.value.end_date = format(end)
+}
+
 async function loadSources() {
   loading.value = true
   try {
@@ -280,6 +290,83 @@ async function loadSyncLogs() {
     console.error(error)
   } finally {
     logsLoading.value = false
+  }
+}
+
+async function loadSymbolOptions() {
+  try {
+    const response = await watchlistsApi.symbols({ limit: 500 })
+    symbolOptions.value = response.data
+    if (!syncForm.value.symbol && response.data[0]) {
+      syncForm.value.symbol = response.data[0].code
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('标的列表加载失败')
+  }
+}
+
+async function handleQueryKline(showMessage = true) {
+  if (!syncForm.value.symbol) {
+    ElMessage.warning('请选择一个标的后再查询')
+    return
+  }
+
+  if (!syncForm.value.start_date || !syncForm.value.end_date) {
+    ElMessage.warning('查询前请先选择日期范围')
+    return
+  }
+
+  try {
+    const response = await datasourcesApi.queryKline({
+      symbol: syncForm.value.symbol,
+      start: syncForm.value.start_date,
+      end: syncForm.value.end_date,
+    })
+    klineRows.value = response.data
+
+    if (showMessage) {
+      ElMessage.success(`已查询到 ${response.data.length} 条 K 线记录`)
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('K 线查询失败')
+  }
+}
+
+async function handleSyncKline() {
+  if (!syncForm.value.symbol) {
+    ElMessage.warning('请选择一个标的再同步数据')
+    return
+  }
+
+  if (!syncForm.value.start_date || !syncForm.value.end_date) {
+    ElMessage.warning('请选择开始和结束日期')
+    return
+  }
+
+  syncLoading.value = true
+  try {
+    const response = await datasourcesApi.syncKline({
+      symbol: syncForm.value.symbol,
+      sync_type: syncForm.value.sync_type,
+      start_date: syncForm.value.start_date,
+      end_date: syncForm.value.end_date,
+      adjust: 'qfq',
+    })
+
+    const { added, skipped, error } = response.data
+    ElMessage.success(`同步完成：新增 ${added} 条，跳过 ${skipped} 条`)
+    if (error) {
+      ElMessage.warning(error)
+    }
+
+    await Promise.all([loadSyncLogs(), handleQueryKline(false)])
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('手动同步失败')
+  } finally {
+    syncLoading.value = false
   }
 }
 
@@ -354,96 +441,9 @@ function syncStatusType(value: string) {
   return ({ success: 'success', failed: 'danger', partial: 'warning' } as Record<string, string>)[value] || 'info'
 }
 
-function defaultDateRange() {
-  const end = new Date()
-  const start = new Date()
-  start.setDate(end.getDate() - 30)
-
-  const format = (date: Date) => date.toISOString().slice(0, 10)
-  syncForm.value.start_date = format(start)
-  syncForm.value.end_date = format(end)
-}
-
-async function loadSymbols() {
-  try {
-    const response = await watchlistsApi.symbols({ limit: 500 })
-    symbolOptions.value = response.data
-    if (!syncForm.value.symbol && response.data[0]) {
-      syncForm.value.symbol = response.data[0].code
-    }
-  } catch (error) {
-    console.error(error)
-    ElMessage.error('标的列表加载失败')
-  }
-}
-
-async function handleSyncKline() {
-  if (!syncForm.value.symbol) {
-    ElMessage.warning('请选择一个标的再同步数据')
-    return
-  }
-
-  if (!syncForm.value.start_date || !syncForm.value.end_date) {
-    ElMessage.warning('请选择开始和结束日期')
-    return
-  }
-
-  syncLoading.value = true
-  try {
-    const response = await datasourcesApi.syncKline({
-      symbol: syncForm.value.symbol,
-      sync_type: syncForm.value.sync_type,
-      start_date: syncForm.value.start_date,
-      end_date: syncForm.value.end_date,
-      adjust: 'qfq',
-    })
-
-    const { added, skipped, error } = response.data
-    ElMessage.success(`同步完成：新增 ${added} 条，跳过 ${skipped} 条`)
-    if (error) {
-      ElMessage.warning(error)
-    }
-
-    await Promise.all([loadSyncLogs(), handleQueryKline(false)])
-  } catch (error) {
-    console.error(error)
-    ElMessage.error('手动同步失败')
-  } finally {
-    syncLoading.value = false
-  }
-}
-
-async function handleQueryKline(showMessage = true) {
-  if (!syncForm.value.symbol) {
-    ElMessage.warning('请选择一个标的后再查询')
-    return
-  }
-
-  if (!syncForm.value.start_date || !syncForm.value.end_date) {
-    ElMessage.warning('查询前请先选择日期范围')
-    return
-  }
-
-  try {
-    const response = await datasourcesApi.queryKline({
-      symbol: syncForm.value.symbol,
-      start: syncForm.value.start_date,
-      end: syncForm.value.end_date,
-    })
-    klineRows.value = response.data
-
-    if (showMessage) {
-      ElMessage.success(`已查询到 ${response.data.length} 条 K 线记录`)
-    }
-  } catch (error) {
-    console.error(error)
-    ElMessage.error('K 线查询失败')
-  }
-}
-
 onMounted(async () => {
   defaultDateRange()
-  await Promise.all([loadSources(), loadSnapshots(), loadSyncLogs(), loadSymbols()])
+  await Promise.all([loadSources(), loadSnapshots(), loadSyncLogs(), loadSymbolOptions()])
 })
 </script>
 
