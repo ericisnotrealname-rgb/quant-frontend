@@ -52,10 +52,10 @@
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑标的' : '新增标的'" width="540px">
       <el-form :model="form" label-width="100px">
         <el-form-item label="代码" required>
-          <el-input v-model="form.code" />
+          <el-input v-model="form.code" @blur="syncNameFromCode" />
         </el-form-item>
-        <el-form-item label="名称" required>
-          <el-input v-model="form.name" />
+        <el-form-item label="名称">
+          <el-input v-model="form.name" placeholder="可为空，程序将按代码和市场自动补全" />
         </el-form-item>
         <el-form-item label="市场" required>
           <el-select v-model="form.market" style="width: 100%">
@@ -132,6 +132,22 @@ function openDialog(row?: SymbolItem) {
   dialogVisible.value = true
 }
 
+async function syncNameFromCode() {
+  const code = form.value.code?.trim()
+  if (!code || !form.value.market) return
+  if (form.value.name && form.value.name.trim()) return
+
+  try {
+    const response = await watchlistsApi.resolveSymbolName(code, form.value.market)
+    const resolvedName = response.data.name
+    if (resolvedName) {
+      form.value.name = resolvedName
+    }
+  } catch (error) {
+    console.warn('自动填充名称失败', error)
+  }
+}
+
 async function loadData() {
   loading.value = true
   try {
@@ -146,34 +162,25 @@ async function loadData() {
 }
 
 async function submitForm() {
-  if (!form.value.code || !form.value.name) {
-    ElMessage.warning('代码和名称不能为空')
+  if (!form.value.code) {
+    ElMessage.warning('代码不能为空')
+    return
+  }
+  if (!form.value.name.trim()) {
+    await syncNameFromCode()
+  }
+  if (!form.value.name.trim()) {
+    ElMessage.warning('名称无法自动识别，请手动填写名称')
     return
   }
 
   saving.value = true
   try {
-    if (editingId.value) {
-      await watchlistsApi.updateGroup(editingId.value, { name: form.value.name })
-    }
-    // no direct symbols update API in current backend uses same generic endpoints through DRF, this is intentionally routed through the same list endpoint
     const payload = { ...form.value }
     if (editingId.value) {
-      const response = await fetch(`/api/watchlists/symbols/${editingId.value}/`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': document.cookie.match(/csrftoken=([^;]+)/)?.[1] || '' },
-        credentials: 'same-origin',
-        body: JSON.stringify(payload),
-      })
-      if (!response.ok) throw new Error('update failed')
+      await watchlistsApi.updateSymbol(editingId.value, payload)
     } else {
-      const response = await fetch('/api/watchlists/symbols/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': document.cookie.match(/csrftoken=([^;]+)/)?.[1] || '' },
-        credentials: 'same-origin',
-        body: JSON.stringify(payload),
-      })
-      if (!response.ok) throw new Error('create failed')
+      await watchlistsApi.createSymbol(payload)
     }
     dialogVisible.value = false
     resetForm()
@@ -189,12 +196,7 @@ async function submitForm() {
 
 async function remove(id: number) {
   try {
-    const response = await fetch(`/api/watchlists/symbols/${id}/`, {
-      method: 'DELETE',
-      headers: { 'X-CSRFToken': document.cookie.match(/csrftoken=([^;]+)/)?.[1] || '' },
-      credentials: 'same-origin',
-    })
-    if (!response.ok) throw new Error('delete failed')
+    await watchlistsApi.deleteSymbol(id)
     ElMessage.success('删除成功')
     await loadData()
   } catch (error) {
