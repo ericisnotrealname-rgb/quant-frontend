@@ -106,6 +106,9 @@ async function loadData() {
     ])
     groups.value = groupsResponse.data
     allSymbols.value = symbolsResponse.data
+    if (selectedGroup.value) {
+      selectedGroup.value = groups.value.find((group) => group.id === selectedGroup.value?.id) || null
+    }
   } catch (error) {
     ElMessage.error('分组数据加载失败')
     console.error(error)
