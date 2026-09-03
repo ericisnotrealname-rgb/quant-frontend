@@ -51,8 +51,14 @@
         <el-form-item label="根 Suite ID" required>
           <el-input v-model.number="form.root_suite" />
         </el-form-item>
-        <el-form-item label="标的范围 JSON">
-          <el-input v-model="form.symbol_scope_text" type="textarea" :rows="5" />
+        <el-form-item label="标的范围类型" required>
+          <el-select v-model="form.scopeType" style="width: 100%"><el-option label="全部标的" value="all" /><el-option label="按分组" value="groups" /><el-option label="按标的" value="symbols" /></el-select>
+        </el-form-item>
+        <el-form-item v-if="form.scopeType === 'groups'" label="分组">
+          <el-select v-model="form.groupIds" multiple filterable style="width: 100%"><el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" /></el-select>
+        </el-form-item>
+        <el-form-item v-if="form.scopeType === 'symbols'" label="标的">
+          <el-select v-model="form.symbolCodes" multiple filterable style="width: 100%"><el-option v-for="symbol in symbols" :key="symbol.id" :label="`${symbol.code} ${symbol.name}`" :value="symbol.code" /></el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -67,9 +73,12 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { strategyApi } from '@/api/strategy'
-import type { PlanItem } from '@/types/api'
+import { watchlistsApi } from '@/api/watchlists'
+import type { GroupItem, PlanItem, SymbolItem } from '@/types/api'
 
 const plans = ref<PlanItem[]>([])
+const groups = ref<GroupItem[]>([])
+const symbols = ref<SymbolItem[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
@@ -79,7 +88,9 @@ const form = ref({
   trigger_type: 'manual' as PlanItem['trigger_type'],
   cron_expr: '',
   root_suite: 0,
-  symbol_scope_text: '{}',
+  scopeType: 'all' as 'all' | 'groups' | 'symbols',
+  groupIds: [] as number[],
+  symbolCodes: [] as string[],
 })
 
 function statusLabel(value: string) {
@@ -100,7 +111,7 @@ function resetForm() {
     trigger_type: 'manual',
     cron_expr: '',
     root_suite: 0,
-    symbol_scope_text: '{}',
+    scopeType: 'all', groupIds: [], symbolCodes: [],
   }
   editingId.value = null
 }
@@ -113,7 +124,7 @@ function openDialog(row?: PlanItem) {
       trigger_type: row.trigger_type,
       cron_expr: row.cron_expr || '',
       root_suite: row.root_suite,
-      symbol_scope_text: JSON.stringify(row.symbol_scope || {}, null, 2),
+      scopeType: (row.symbol_scope?.type as 'all' | 'groups' | 'symbols') || 'all', groupIds: Array.isArray(row.symbol_scope?.group_ids) ? row.symbol_scope.group_ids as number[] : [], symbolCodes: Array.isArray(row.symbol_scope?.symbol_codes) ? row.symbol_scope.symbol_codes as string[] : [],
     }
   } else {
     resetForm()
@@ -139,12 +150,9 @@ async function submitForm() {
     ElMessage.warning('名称和根 Suite ID 为必填项')
     return
   }
-  try {
-    JSON.parse(form.value.symbol_scope_text)
-  } catch {
-    ElMessage.warning('标的范围必须为合法 JSON')
-    return
-  }
+  const symbolScope = form.value.scopeType === 'all' ? { type: 'all' } : form.value.scopeType === 'groups' ? { type: 'groups', group_ids: form.value.groupIds } : { type: 'symbols', symbol_codes: form.value.symbolCodes }
+  if (form.value.scopeType === 'groups' && !form.value.groupIds.length) return ElMessage.warning('请选择至少一个分组')
+  if (form.value.scopeType === 'symbols' && !form.value.symbolCodes.length) return ElMessage.warning('请选择至少一个标的')
 
   saving.value = true
   try {
@@ -153,7 +161,7 @@ async function submitForm() {
       trigger_type: form.value.trigger_type,
       cron_expr: form.value.cron_expr || null,
       root_suite: form.value.root_suite,
-      symbol_scope: JSON.parse(form.value.symbol_scope_text),
+      symbol_scope: symbolScope,
     }
     if (editingId.value) {
       await strategyApi.createPlan(payload)
@@ -199,7 +207,7 @@ async function remove(id: number) {
   }
 }
 
-onMounted(loadData)
+onMounted(async () => { await loadData(); const [groupResponse, symbolResponse] = await Promise.all([watchlistsApi.groups(), watchlistsApi.symbols({ limit: 500 })]); groups.value = groupResponse.data; symbols.value = symbolResponse.data })
 </script>
 
 <style scoped>

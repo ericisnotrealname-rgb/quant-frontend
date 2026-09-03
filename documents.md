@@ -412,6 +412,14 @@
 - 页面初始化时，应优先调用当前登录态接口，并在失败时跳转到登录页。
 - 需要统一处理响应结构、分页、错误提示与空状态。
 
+### 2.10.12 结构化 JSON 约束（必须遵守）
+- `Case.params` 仅允许字段：`trigger`、`period`、`threshold_oversold`、`threshold_overbought`、`direction`、`result`、`order`。
+- `Case.params.trigger` 仅允许 `event_type`，且必须已在 `EventRegistry` 中注册。
+- `Plan.symbol_scope.type` 仅允许：`all`、`groups`、`symbols`；对应字段必须为 `type` + `group_ids` 或 `type` + `symbol_codes`。
+- `Edge.event_condition` 仅允许：`event_type`、`case_id`、`next_event`。
+- 前端表单在提交前必须做白名单校验，避免提交自由 JSON 导致后端 `ValidationError` 或执行链断裂。
+- 当前前端已在 Case / Plan 表单中接入对应的白名单校验逻辑，避免用户提交非法字段。
+
 ## 三、交互与反馈要求
 
 1. 所有异步操作（加载、提交、删除等）应有明确的加载状态。可使用按钮 Loading、骨架屏或文本提示。

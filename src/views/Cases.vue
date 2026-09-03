@@ -61,9 +61,33 @@
             <el-option label="executor" value="executor" />
           </el-select>
         </el-form-item>
-        <el-form-item label="参数 JSON" required>
-          <el-input v-model="form.paramsText" type="textarea" :rows="8" />
+        <el-divider content-position="left">参数</el-divider>
+        <el-form-item label="触发事件">
+          <el-select v-model="form.triggerEvent" clearable filterable style="width: 100%">
+            <el-option v-for="eventType in eventTypes" :key="eventType" :label="eventType" :value="eventType" />
+          </el-select>
         </el-form-item>
+        <el-form-item label="周期">
+          <el-input-number v-model="form.period" :min="1" :precision="0" controls-position="right" />
+        </el-form-item>
+        <el-form-item label="超卖阈值"><el-input-number v-model="form.thresholdOversold" :precision="4" controls-position="right" /></el-form-item>
+        <el-form-item label="超买阈值"><el-input-number v-model="form.thresholdOverbought" :precision="4" controls-position="right" /></el-form-item>
+        <el-form-item label="信号方向">
+          <el-select v-model="form.direction" clearable style="width: 100%">
+            <el-option label="做空 / 卖出 (-1)" :value="-1" />
+            <el-option label="观望 (0)" :value="0" />
+            <el-option label="做多 / 买入 (1)" :value="1" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="结果标识"><el-input v-model="form.resultValue" clearable /></el-form-item>
+        <el-divider content-position="left">订单参数</el-divider>
+        <el-form-item label="订单方向">
+          <el-select v-model="form.orderDirection" clearable style="width: 100%">
+            <el-option label="买入" value="buy" /><el-option label="卖出" value="sell" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="订单价格"><el-input v-model="form.orderPrice" clearable /></el-form-item>
+        <el-form-item label="订单数量"><el-input-number v-model="form.orderVolume" :min="1" :precision="0" controls-position="right" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -85,7 +109,12 @@ const saving = ref(false)
 const statusFilter = ref('')
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
-const form = ref({ name: '', node_type: 'signal', paramsText: '{}' })
+const eventTypes = ['SYSTEM_START', 'SYSTEM_STOP', 'SUITE_INIT', 'SUITE_START', 'SUITE_COMPLETED', 'SUITE_FAILED', 'CASE_START', 'CASE_COMPLETED', 'CASE_FAILED', 'CASE_SKIPPED', 'TIMER', 'PRICE_SURGE', 'PRICE_DROP', 'VOLUME_SPIKE', 'MACRO_CPI', 'MACRO_INTEREST']
+const form = ref(createForm())
+
+function createForm() {
+  return { name: '', node_type: 'signal' as CaseItem['node_type'], triggerEvent: '', period: undefined as number | undefined, thresholdOversold: undefined as number | undefined, thresholdOverbought: undefined as number | undefined, direction: undefined as -1 | 0 | 1 | undefined, resultValue: '', orderDirection: '' as 'buy' | 'sell' | '', orderPrice: '', orderVolume: undefined as number | undefined }
+}
 
 const filteredCases = computed(() => {
   return cases.value.filter((item) => !statusFilter.value || item.status === statusFilter.value)
@@ -112,14 +141,17 @@ function conciseJson(value: Record<string, unknown>) {
 }
 
 function resetForm() {
-  form.value = { name: '', node_type: 'signal', paramsText: '{}' }
+  form.value = createForm()
   editingId.value = null
 }
 
 function openDialog(row?: CaseItem) {
   if (row) {
     editingId.value = row.id
-    form.value = { name: row.name, node_type: row.node_type, paramsText: JSON.stringify(row.params || {}, null, 2) }
+    const params = row.params || {}
+    const order = typeof params.order === 'object' && params.order ? params.order as Record<string, unknown> : {}
+    const result = typeof params.result === 'object' && params.result ? params.result as Record<string, unknown> : {}
+    form.value = { ...createForm(), name: row.name, node_type: row.node_type, triggerEvent: typeof (params.trigger as Record<string, unknown> | undefined)?.event_type === 'string' ? (params.trigger as Record<string, unknown>).event_type as string : '', period: typeof params.period === 'number' ? params.period : undefined, thresholdOversold: typeof params.threshold_oversold === 'number' ? params.threshold_oversold : undefined, thresholdOverbought: typeof params.threshold_overbought === 'number' ? params.threshold_overbought : undefined, direction: params.direction === -1 || params.direction === 0 || params.direction === 1 ? params.direction : undefined, resultValue: typeof result.value === 'string' ? result.value : '', orderDirection: order.direction === 'buy' || order.direction === 'sell' ? order.direction : '', orderPrice: typeof order.price === 'string' || typeof order.price === 'number' ? String(order.price) : '', orderVolume: typeof order.volume === 'number' ? order.volume : undefined }
   } else {
     resetForm()
   }
@@ -144,19 +176,22 @@ async function submitForm() {
     ElMessage.warning('Case 名称不能为空')
     return
   }
-  try {
-    JSON.parse(form.value.paramsText)
-  } catch {
-    ElMessage.warning('参数必须为合法 JSON')
-    return
-  }
+  if (form.value.triggerEvent && !eventTypes.includes(form.value.triggerEvent)) return ElMessage.warning('请选择有效的触发事件')
 
   saving.value = true
   try {
     const payload: Partial<CaseItem> = {
       name: form.value.name,
       node_type: form.value.node_type as CaseItem['node_type'],
-      params: JSON.parse(form.value.paramsText),
+      params: {
+        ...(form.value.triggerEvent ? { trigger: { event_type: form.value.triggerEvent } } : {}),
+        ...(form.value.period !== undefined ? { period: form.value.period } : {}),
+        ...(form.value.thresholdOversold !== undefined ? { threshold_oversold: form.value.thresholdOversold } : {}),
+        ...(form.value.thresholdOverbought !== undefined ? { threshold_overbought: form.value.thresholdOverbought } : {}),
+        ...(form.value.direction !== undefined ? { direction: form.value.direction } : {}),
+        ...(form.value.resultValue ? { result: { value: form.value.resultValue } } : {}),
+        ...(form.value.orderDirection ? { order: { direction: form.value.orderDirection, price: form.value.orderPrice, volume: form.value.orderVolume } } : {}),
+      },
     }
     if (editingId.value) {
       await strategyApi.updateCase(editingId.value, payload)
