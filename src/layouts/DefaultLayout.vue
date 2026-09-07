@@ -41,6 +41,10 @@
             <el-icon><Calendar /></el-icon>
             <template #title>Plan 管理</template>
           </el-menu-item>
+          <el-menu-item index="/funds">
+            <el-icon><Wallet /></el-icon>
+            <template #title>资金占用</template>
+          </el-menu-item>
           <el-menu-item index="/execution">
             <el-icon><DataAnalysis /></el-icon>
             <template #title>执行日志</template>
@@ -103,7 +107,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElAside, ElAvatar, ElButton, ElContainer, ElDropdown, ElDropdownItem, ElDropdownMenu, ElHeader, ElIcon, ElMain, ElMenu, ElMenuItem } from 'element-plus'
-import { Bell, Calendar, Connection, DataAnalysis, Document, Expand, Folder, Fold, TrendCharts, User, VideoPlay } from '@element-plus/icons-vue'
+import { Bell, Calendar, Connection, DataAnalysis, Document, Expand, Folder, Fold, TrendCharts, User, VideoPlay, Wallet } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()

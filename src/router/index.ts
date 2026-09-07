@@ -57,6 +57,12 @@ const router = createRouter({
       meta: { title: 'Plan 管理', requiresAuth: true },
     },
     {
+      path: '/funds',
+      name: 'funds',
+      component: () => import('@/views/FundAllocations.vue'),
+      meta: { title: '资金占用', requiresAuth: true },
+    },
+    {
       path: '/execution',
       name: 'execution',
       component: () => import('@/views/ExecutionLogs.vue'),

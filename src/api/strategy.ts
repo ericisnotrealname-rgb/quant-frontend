@@ -1,5 +1,5 @@
 import api from './index'
-import type { CaseItem, PlanItem, SuiteItem } from '@/types/api'
+import type { CaseItem, FundAllocation, PlanItem, SuiteItem } from '@/types/api'
 
 export const strategyApi = {
   cases(params?: Record<string, unknown>) {
@@ -34,5 +34,17 @@ export const strategyApi = {
   },
   publishPlan(id: number) {
     return api.post<PlanItem>(`/plans/${id}/publish/`)
+  },
+  fundAllocations(params?: Record<string, unknown>) {
+    return api.get<FundAllocation[]>('/execution/fund-allocations/', { params })
+  },
+  createFundAllocation(data: Partial<FundAllocation>) {
+    return api.post<FundAllocation>('/execution/fund-allocations/', data)
+  },
+  updateFundAllocation(id: number, data: Partial<FundAllocation>) {
+    return api.patch<FundAllocation>(`/execution/fund-allocations/${id}/`, data)
+  },
+  deleteFundAllocation(id: number) {
+    return api.delete(`/execution/fund-allocations/${id}/`)
   },
 }

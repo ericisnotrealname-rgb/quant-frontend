@@ -38,6 +38,20 @@ export interface Order {
   price: string
   volume: number
   status: 'pending' | 'sent' | 'filled' | 'rejected'
+  fund_allocation?: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface FundAllocation {
+  id: number
+  level: 'plan' | 'suite' | 'case'
+  plan: number
+  suite: number | null
+  case: number | null
+  amount: string
+  used_amount: string
+  status: 'active' | 'released'
   created_at: string
   updated_at: string
 }
@@ -82,6 +96,8 @@ export interface PlanItem {
   symbol_scope: Record<string, unknown>
   exec_mode: 'serial' | 'parallel' | 'fail_stop'
   retry_policy: Record<string, unknown>
+  account_id?: string
+  allocated_capital?: string | null
   status: 'draft' | 'published' | 'archived'
   version: number
 }

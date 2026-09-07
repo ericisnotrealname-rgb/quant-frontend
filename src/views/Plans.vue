@@ -16,6 +16,12 @@
           <template #default="{ row }">{{ triggerLabel(row.trigger_type) }}</template>
         </el-table-column>
         <el-table-column prop="root_suite" label="根 Suite ID" width="120" />
+        <el-table-column prop="account_id" label="账户 ID" width="160">
+          <template #default="{ row }">{{ row.account_id || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="allocated_capital" label="占用资金" width="120">
+          <template #default="{ row }">{{ row.allocated_capital ?? '—' }}</template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="120">
           <template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag></template>
         </el-table-column>
@@ -60,6 +66,12 @@
         <el-form-item v-if="form.scopeType === 'symbols'" label="标的">
           <el-select v-model="form.symbolCodes" multiple filterable style="width: 100%"><el-option v-for="symbol in symbols" :key="symbol.id" :label="`${symbol.code} ${symbol.name}`" :value="symbol.code" /></el-select>
         </el-form-item>
+        <el-form-item label="交易账户 ID">
+          <el-input v-model="form.account_id" placeholder="gm 模拟账户 ID（留空则不绑定）" />
+        </el-form-item>
+        <el-form-item label="占用资金总额">
+          <el-input-number v-model="form.allocated_capital" :min="0" :precision="2" :controls="false" style="width: 100%" placeholder="Plan 占用的账户资金（留空则不启用资金管控）" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -91,6 +103,8 @@ const form = ref({
   scopeType: 'all' as 'all' | 'groups' | 'symbols',
   groupIds: [] as number[],
   symbolCodes: [] as string[],
+  account_id: '',
+  allocated_capital: undefined as number | undefined,
 })
 
 function statusLabel(value: string) {
@@ -111,7 +125,7 @@ function resetForm() {
     trigger_type: 'manual',
     cron_expr: '',
     root_suite: 0,
-    scopeType: 'all', groupIds: [], symbolCodes: [],
+    scopeType: 'all', groupIds: [], symbolCodes: [], account_id: '', allocated_capital: undefined,
   }
   editingId.value = null
 }
@@ -125,6 +139,8 @@ function openDialog(row?: PlanItem) {
       cron_expr: row.cron_expr || '',
       root_suite: row.root_suite,
       scopeType: (row.symbol_scope?.type as 'all' | 'groups' | 'symbols') || 'all', groupIds: Array.isArray(row.symbol_scope?.group_ids) ? row.symbol_scope.group_ids as number[] : [], symbolCodes: Array.isArray(row.symbol_scope?.symbol_codes) ? row.symbol_scope.symbol_codes as string[] : [],
+      account_id: row.account_id || '',
+      allocated_capital: row.allocated_capital != null ? Number(row.allocated_capital) : undefined,
     }
   } else {
     resetForm()
@@ -162,6 +178,8 @@ async function submitForm() {
       cron_expr: form.value.cron_expr || null,
       root_suite: form.value.root_suite,
       symbol_scope: symbolScope,
+      account_id: form.value.account_id.trim() || '',
+      allocated_capital: form.value.allocated_capital != null ? String(form.value.allocated_capital) : null,
     }
     if (editingId.value) {
       await strategyApi.createPlan(payload)

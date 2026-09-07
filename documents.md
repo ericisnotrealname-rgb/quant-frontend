@@ -1,8 +1,12 @@
 # 量化交易平台 · 前端开发文档
 
-> 版本：v2.0  
-> 日期：2026-08-31  
+> 版本：v2.1  
+> 日期：2026-09-07  
 > 状态：需求冻结 · 按功能清单实现前端界面设计
+>
+> 变更记录：
+> - v2.1（2026-09-07）：新增「资金占用管理」模块（对接后端分级资金占用链 FundAllocation）；Plan 管理表单与列表接入交易账户 ID / 占用资金字段。
+> - v2.0（2026-08-31）：需求冻结，按功能清单实现前端界面设计。
 
 ## 一、整体布局要求
 
@@ -30,6 +34,7 @@
 - Case 管理
 - Suite 管理
 - Plan 管理
+- 资金占用（Fund Allocations）
 - 执行日志
 - 触发执行
 - 事件类型管理
@@ -419,6 +424,30 @@
 - `Edge.event_condition` 仅允许：`event_type`、`case_id`、`next_event`。
 - 前端表单在提交前必须做白名单校验，避免提交自由 JSON 导致后端 `ValidationError` 或执行链断裂。
 - 当前前端已在 Case / Plan 表单中接入对应的白名单校验逻辑，避免用户提交非法字段。
+
+### 2.10.13 资金占用管理模块（v2.1 新增）
+对应后端分级资金占用链：**Plan 占用账户资金 → Suite 向 Plan 申请 → Case 向 Suite 申请**；运行时下单金额按 Case → Suite → Plan 逐级原子扣减，三级都不足时订单被拒。
+
+#### 数据契约
+- `FundAllocation` 字段：`level`（`plan` / `suite` / `case`）、`plan`、`suite`（case/suite 级必填）、`case`（case 级必填）、`amount`（申请额度，字符串金额）、`used_amount`（已占用，只读）、`status`（`active` / `released`，只读）。
+- `PlanItem` 新增：`account_id`（交易账户 ID，可空）、`allocated_capital`（占用资金总额，可空；留空表示不启用资金管控）。
+- `Order` 新增：`fund_allocation`（下单时实际扣减的额度记录 ID，审计用）。
+
+#### 接口
+- 资金申请列表：`GET /api/execution/fund-allocations/`（支持 `plan` / `suite` / `case` / `level` / `status` 过滤）
+- 新增申请：`POST /api/execution/fund-allocations/`（后端统一执行层级校验：父额度存在且子级申请总额不超过父额度）
+- 更新申请：`PATCH /api/execution/fund-allocations/<id>/`
+- 删除申请：`DELETE /api/execution/fund-allocations/<id>/`
+
+#### 页面实现（`src/views/FundAllocations.vue`，路由 `/funds`）
+- 列表：层级彩色标签（Plan 级 / Suite 级 / Case 级）、Plan / Suite / Case ID、申请额度、**已占用 / 剩余**（前端计算 `amount - used_amount`）、状态标签。
+- 新增 / 编辑弹窗：按层级切换必选项——Plan 级仅选 Plan；Suite 级选 Plan + Suite；Case 级选 Plan + Suite + Case；编辑时层级不可改。提交前做必填校验（层级 → 对应父级 → 额度）。
+- 后端层级校验失败（如「Suite 申请 2000 超过 Plan 剩余额度」）时，错误消息透传到 `ElMessage` 展示。
+- Plan / Suite / Case 下拉数据分别在页面挂载时从 `/api/plans/`、`/api/suites/`、`/api/cases/` 拉取，兼容数组与分页（`results`）两种响应结构。
+
+#### Plan 管理页联动（`src/views/Plans.vue`）
+- 表单新增「交易账户 ID」（文本，留空则不绑定）与「占用资金总额」（数字，两位小数，留空则不启用资金管控）。
+- 列表新增「账户 ID」「占用资金」两列，空值显示 `—`。
 
 ## 三、交互与反馈要求
 
