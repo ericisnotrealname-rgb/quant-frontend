@@ -405,6 +405,23 @@
 - 状态标签：new（草稿）、running（运行中）、done（已完成）、interrupt（已中断）、failed（失败）
 - 启动/停止按钮：仅在允许操作时显示（Plan 为 new 时显示启动，running 时显示停止）
 
+#### 状态流转规则
+```
+Case:  new → running → done
+                  → failed
+Suite: new → running → done      (旗下 cases 全部 done)
+                  → interrupt (任一 case 失败 / 手动停止)
+Plan:  new → running → done      (旗下 suites 全部 done)
+                  → interrupt (手动停止)
+```
+
+#### 约束
+- 非 running 的 Suite 中的 Case 不可运行；停止时强制标记 running cases 为 failed
+- 非 running 的 Plan 中的 Suite 不可运行；停止时强制中断 running suites
+- Plan `suite_start_mode=auto` 时启动自动启动根 Suite
+- Plan 创建时 `allocated_capital` 必须 ≤ 账户空闲资金（三层行级锁保证并发安全）
+- Suite 加入 Plan 时，其 `allocated_capital` 必须 ≤ Plan 空闲资金
+
 ### 2.10.9 执行日志模块
 - 执行日志列表：`GET /api/execution/logs/`
 - 委托单列表：`GET /api/execution/orders/`
