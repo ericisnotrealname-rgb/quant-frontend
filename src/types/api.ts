@@ -75,6 +75,7 @@ export interface CaseItem {
   params: Record<string, unknown>
   version: number
   status: 'draft' | 'published' | 'archived'
+  run_status: 'new' | 'running' | 'done' | 'failed'
 }
 
 export interface SuiteItem {
@@ -82,8 +83,10 @@ export interface SuiteItem {
   name: string
   aggregate_method: 'weighted_sum' | 'vote' | 'and' | 'or'
   status: 'draft' | 'published' | 'archived'
+  run_status: 'new' | 'running' | 'done' | 'interrupt'
   version: number
   cases: number[]
+  allocated_capital?: string | null
 }
 
 export interface PlanItem {
@@ -98,7 +101,10 @@ export interface PlanItem {
   retry_policy: Record<string, unknown>
   account_id?: string
   allocated_capital?: string | null
+  available_capital?: string | null
   status: 'draft' | 'published' | 'archived'
+  run_status: 'new' | 'running' | 'done' | 'interrupt'
+  suite_start_mode: 'auto' | 'manual'
   version: number
 }
 

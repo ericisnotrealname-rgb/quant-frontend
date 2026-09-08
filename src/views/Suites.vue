@@ -16,14 +16,22 @@
           <template #default="{ row }">{{ aggregateLabel(row.aggregate_method) }}</template>
         </el-table-column>
         <el-table-column prop="version" label="版本" width="90" />
+        <el-table-column prop="allocated_capital" label="占用资金" width="120">
+          <template #default="{ row }">{{ row.allocated_capital ?? '—' }}</template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="120">
           <template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
+        <el-table-column prop="run_status" label="运行状态" width="120">
+          <template #default="{ row }"><el-tag :type="runStatusType(row.run_status)">{{ runStatusLabel(row.run_status) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="操作" width="360" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openDialog(row)">编辑</el-button>
             <el-button size="small" @click="viewTopology(row)">查看拓扑</el-button>
             <el-button size="small" @click="publish(row.id)">发布</el-button>
+            <el-button v-if="row.run_status === 'new'" size="small" type="success" @click="start(row.id)">启动</el-button>
+            <el-button v-if="row.run_status === 'running'" size="small" type="warning" @click="stop(row.id)">停止</el-button>
             <el-popconfirm title="确认删除该 Suite？" @confirm="remove(row.id)">
               <template #reference>
                 <el-button size="small" type="danger" plain>删除</el-button>
@@ -85,6 +93,42 @@ function statusType(value: string) {
 
 function aggregateLabel(value: string) {
   return ({ weighted_sum: '加权求和', vote: '投票', and: '逻辑与', or: '逻辑或' } as Record<string, string>)[value] || value
+}
+
+function runStatusLabel(value: string) {
+  return ({ new: '草稿', running: '运行中', done: '已完成', interrupt: '已中断', failed: '失败' } as Record<string, string>)[value] || value
+}
+
+function runStatusType(value: string) {
+  return ({ new: 'info', running: 'primary', done: 'success', interrupt: 'warning', failed: 'danger' } as Record<string, string>)[value] || 'info'
+}
+
+async function start(id: number) {
+  try {
+    await fetch(`/api/suites/${id}/start/`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-CSRFToken': document.cookie.match(/csrftoken=([^;]+)/)?.[1] || '' },
+    })
+    ElMessage.success('Suite 已启动')
+    await loadData()
+  } catch (error) {
+    ElMessage.error('启动失败')
+  }
+}
+
+async function stop(id: number) {
+  try {
+    await fetch(`/api/suites/${id}/stop/`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-CSRFToken': document.cookie.match(/csrftoken=([^;]+)/)?.[1] || '' },
+    })
+    ElMessage.success('Suite 已停止')
+    await loadData()
+  } catch (error) {
+    ElMessage.error('停止失败')
+  }
 }
 
 function resetForm() {

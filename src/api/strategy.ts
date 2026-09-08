@@ -26,6 +26,12 @@ export const strategyApi = {
   publishSuite(id: number) {
     return api.post<SuiteItem>(`/suites/${id}/publish/`)
   },
+  startSuite(id: number) {
+    return api.post<SuiteItem>(`/suites/${id}/start/`)
+  },
+  stopSuite(id: number) {
+    return api.post<SuiteItem>(`/suites/${id}/stop/`)
+  },
   plans(params?: Record<string, unknown>) {
     return api.get<PlanItem[]>('/plans/', { params })
   },
@@ -34,6 +40,12 @@ export const strategyApi = {
   },
   publishPlan(id: number) {
     return api.post<PlanItem>(`/plans/${id}/publish/`)
+  },
+  startPlan(id: number) {
+    return api.post<PlanItem>(`/plans/${id}/start/`)
+  },
+  stopPlan(id: number) {
+    return api.post<PlanItem>(`/plans/${id}/stop/`)
   },
   fundAllocations(params?: Record<string, unknown>) {
     return api.get<FundAllocation[]>('/execution/fund-allocations/', { params })

@@ -5,6 +5,7 @@
 > 状态：需求冻结 · 按功能清单实现前端界面设计
 >
 > 变更记录：
+> - v2.2（2026-09-07）：新增「运行状态管理」模块（对接后端 Case/Suite/Plan 三级 run_status 状态机）；Plan/Suite 管理页新增启动/停止按钮、状态标签；Case 列表新增运行状态列。
 > - v2.1（2026-09-07）：新增「资金占用管理」模块（对接后端分级资金占用链 FundAllocation）；Plan 管理表单与列表接入交易账户 ID / 占用资金字段。
 > - v2.0（2026-08-31）：需求冻结，按功能清单实现前端界面设计。
 
@@ -34,6 +35,7 @@
 - Case 管理
 - Suite 管理
 - Plan 管理
+- 运行状态（Run Status）
 - 资金占用（Fund Allocations）
 - 执行日志
 - 触发执行
@@ -394,13 +396,22 @@
 - 解析 Plan 标的范围：`GET /api/plans/<id>/symbols/`
 - Plan 版本记录：`GET /api/plans/<id>/versions/`
 
-### 2.10.8 执行日志模块
+### 2.10.8 运行状态管理模块
+- Plan 启动：`POST /api/plans/<id>/start/`
+- Plan 停止：`POST /api/plans/<id>/stop/`
+- Suite 启动：`POST /api/suites/<id>/start/`
+- Suite 停止：`POST /api/suites/<id>/stop/`
+- Case 运行状态：`GET /api/cases/`（列表中包含 `run_status` 字段）
+- 状态标签：new（草稿）、running（运行中）、done（已完成）、interrupt（已中断）、failed（失败）
+- 启动/停止按钮：仅在允许操作时显示（Plan 为 new 时显示启动，running 时显示停止）
+
+### 2.10.9 执行日志模块
 - 执行日志列表：`GET /api/execution/logs/`
 - 委托单列表：`GET /api/execution/orders/`
 - 运行记录列表：`GET /api/execution/runs/`
 - 触发执行：`POST /api/execution/trigger/`
 
-### 2.10.9 触发执行模块
+### 2.10.10 触发执行模块
 - 手动触发 Plan：`POST /api/execution/trigger/`
 - 查询运行状态：`GET /api/execution/run/<run_id>/`
 - 启动执行：`POST /api/execution/run/<run_id>/start/`

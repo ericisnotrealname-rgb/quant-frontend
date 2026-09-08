@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="page-container">
     <div class="page-heading">
       <div>
@@ -17,18 +17,33 @@
         </el-table-column>
         <el-table-column prop="root_suite" label="根 Suite ID" width="120" />
         <el-table-column prop="account_id" label="账户 ID" width="160">
-          <template #default="{ row }">{{ row.account_id || '—' }}</template>
+          <template #default="{ row }">{{ row.account_id || "—" }}</template>
         </el-table-column>
         <el-table-column prop="allocated_capital" label="占用资金" width="120">
-          <template #default="{ row }">{{ row.allocated_capital ?? '—' }}</template>
+          <template #default="{ row }">{{ row.allocated_capital ?? "—" }}</template>
+        </el-table-column>
+        <el-table-column prop="available_capital" label="空闲资金" width="120">
+          <template #default="{ row }">{{ row.available_capital ?? "—" }}</template>
+        </el-table-column>
+        <el-table-column prop="suite_start_mode" label="启动模式" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.suite_start_mode === 'auto' ? 'success' : 'info'" size="small">
+              {{ row.suite_start_mode === 'auto' ? '自动' : '手动' }}
+            </el-tag>
+          </template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="120">
           <template #default="{ row }"><el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column prop="run_status" label="运行状态" width="120">
+          <template #default="{ row }"><el-tag :type="runStatusType(row.run_status)">{{ runStatusLabel(row.run_status) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openDialog(row)">编辑</el-button>
             <el-button size="small" @click="publish(row.id)">发布</el-button>
+            <el-button v-if="row.run_status === 'new'" size="small" type="success" @click="start(row.id)">启动</el-button>
+            <el-button v-if="row.run_status === 'running'" size="small" type="warning" @click="stop(row.id)">停止</el-button>
             <el-popconfirm title="确认删除该 Plan？" @confirm="remove(row.id)">
               <template #reference>
                 <el-button size="small" type="danger" plain>删除</el-button>
@@ -72,6 +87,12 @@
         <el-form-item label="占用资金总额">
           <el-input-number v-model="form.allocated_capital" :min="0" :precision="2" :controls="false" style="width: 100%" placeholder="Plan 占用的账户资金（留空则不启用资金管控）" />
         </el-form-item>
+        <el-form-item label="Suite 启动模式">
+          <el-radio-group v-model="form.suite_start_mode">
+            <el-radio value="manual">手动启动</el-radio>
+            <el-radio value="auto">Plan 启动时自动启动</el-radio>
+          </el-radio-group>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -82,11 +103,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { strategyApi } from '@/api/strategy'
-import { watchlistsApi } from '@/api/watchlists'
-import type { GroupItem, PlanItem, SymbolItem } from '@/types/api'
+import { ref, onMounted } from "vue"
+import { ElMessage } from "element-plus"
+import { strategyApi } from "@/api/strategy"
+import { watchlistsApi } from "@/api/watchlists"
+import type { PlanItem, GroupItem, SymbolItem } from "@/types/api"
 
 const plans = ref<PlanItem[]>([])
 const groups = ref<GroupItem[]>([])
@@ -96,36 +117,55 @@ const saving = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
 const form = ref({
-  name: '',
-  trigger_type: 'manual' as PlanItem['trigger_type'],
-  cron_expr: '',
+  name: "",
+  trigger_type: "manual",
+  cron_expr: "",
   root_suite: 0,
-  scopeType: 'all' as 'all' | 'groups' | 'symbols',
+  scopeType: "all",
   groupIds: [] as number[],
   symbolCodes: [] as string[],
-  account_id: '',
+  account_id: "",
   allocated_capital: undefined as number | undefined,
+  suite_start_mode: "manual" as "auto" | "manual",
 })
 
-function statusLabel(value: string) {
-  return ({ draft: '草稿', published: '已发布', archived: '已归档' } as Record<string, string>)[value] || value
+function triggerLabel(value: string): string {
+  const map: Record<string, string> = { time: "时间驱动", event: "事件驱动", manual: "手动触发" }
+  return map[value] || value
 }
 
-function statusType(value: string) {
-  return ({ draft: 'info', published: 'primary', archived: 'warning' } as Record<string, string>)[value] || 'info'
+function statusType(value: string): "success" | "info" | "warning" | "danger" {
+  const map: Record<string, "success" | "info" | "warning" | "danger"> = { draft: "info", published: "success", archived: "warning" }
+  return map[value] || "info"
 }
 
-function triggerLabel(value: string) {
-  return ({ time: 'time', event: 'event', manual: 'manual' } as Record<string, string>)[value] || value
+function statusLabel(value: string): string {
+  const map: Record<string, string> = { draft: "草稿", published: "已发布", archived: "已归档" }
+  return map[value] || value
+}
+
+function runStatusType(value: string): "success" | "info" | "warning" | "danger" {
+  const map: Record<string, "success" | "info" | "warning" | "danger"> = { new: "info", running: "warning", done: "success", interrupt: "danger" }
+  return map[value] || "info"
+}
+
+function runStatusLabel(value: string): string {
+  const map: Record<string, string> = { new: "新建", running: "运行中", done: "已完成", interrupt: "已中断" }
+  return map[value] || value
 }
 
 function resetForm() {
   form.value = {
-    name: '',
-    trigger_type: 'manual',
-    cron_expr: '',
+    name: "",
+    trigger_type: "manual",
+    cron_expr: "",
     root_suite: 0,
-    scopeType: 'all', groupIds: [], symbolCodes: [], account_id: '', allocated_capital: undefined,
+    scopeType: "all",
+    groupIds: [],
+    symbolCodes: [],
+    account_id: "",
+    allocated_capital: undefined,
+    suite_start_mode: "manual",
   }
   editingId.value = null
 }
@@ -136,11 +176,14 @@ function openDialog(row?: PlanItem) {
     form.value = {
       name: row.name,
       trigger_type: row.trigger_type,
-      cron_expr: row.cron_expr || '',
+      cron_expr: row.cron_expr || "",
       root_suite: row.root_suite,
-      scopeType: (row.symbol_scope?.type as 'all' | 'groups' | 'symbols') || 'all', groupIds: Array.isArray(row.symbol_scope?.group_ids) ? row.symbol_scope.group_ids as number[] : [], symbolCodes: Array.isArray(row.symbol_scope?.symbol_codes) ? row.symbol_scope.symbol_codes as string[] : [],
-      account_id: row.account_id || '',
+      scopeType: (row.symbol_scope?.type as "all" | "groups" | "symbols") || "all",
+      groupIds: Array.isArray(row.symbol_scope?.group_ids) ? row.symbol_scope.group_ids as number[] : [],
+      symbolCodes: Array.isArray(row.symbol_scope?.symbol_codes) ? row.symbol_scope.symbol_codes as string[] : [],
+      account_id: row.account_id || "",
       allocated_capital: row.allocated_capital != null ? Number(row.allocated_capital) : undefined,
+      suite_start_mode: row.suite_start_mode || "manual",
     }
   } else {
     resetForm()
@@ -154,7 +197,7 @@ async function loadData() {
     const response = await strategyApi.plans()
     plans.value = response.data
   } catch (error) {
-    ElMessage.error('Plan 列表加载失败')
+    ElMessage.error("Plan 列表加载失败")
     console.error(error)
   } finally {
     loading.value = false
@@ -163,12 +206,12 @@ async function loadData() {
 
 async function submitForm() {
   if (!form.value.name.trim() || !form.value.root_suite) {
-    ElMessage.warning('名称和根 Suite ID 为必填项')
+    ElMessage.warning("名称和根 Suite ID 为必填项")
     return
   }
-  const symbolScope = form.value.scopeType === 'all' ? { type: 'all' } : form.value.scopeType === 'groups' ? { type: 'groups', group_ids: form.value.groupIds } : { type: 'symbols', symbol_codes: form.value.symbolCodes }
-  if (form.value.scopeType === 'groups' && !form.value.groupIds.length) return ElMessage.warning('请选择至少一个分组')
-  if (form.value.scopeType === 'symbols' && !form.value.symbolCodes.length) return ElMessage.warning('请选择至少一个标的')
+  const symbolScope = form.value.scopeType === "all" ? { type: "all" } : form.value.scopeType === "groups" ? { type: "groups", group_ids: form.value.groupIds } : { type: "symbols", symbol_codes: form.value.symbolCodes }
+  if (form.value.scopeType === "groups" && !form.value.groupIds.length) return ElMessage.warning("请选择至少一个分组")
+  if (form.value.scopeType === "symbols" && !form.value.symbolCodes.length) return ElMessage.warning("请选择至少一个标的")
 
   saving.value = true
   try {
@@ -178,21 +221,22 @@ async function submitForm() {
       cron_expr: form.value.cron_expr || null,
       root_suite: form.value.root_suite,
       symbol_scope: symbolScope,
-      account_id: form.value.account_id.trim() || '',
+      account_id: form.value.account_id.trim() || "",
       allocated_capital: form.value.allocated_capital != null ? String(form.value.allocated_capital) : null,
+      suite_start_mode: form.value.suite_start_mode,
     }
     if (editingId.value) {
-      await strategyApi.createPlan(payload)
-      ElMessage.success('Plan 已更新')
+      await strategyApi.createPlan(payload as unknown as PlanItem)
+      ElMessage.success("Plan 已更新")
     } else {
-      await strategyApi.createPlan(payload)
-      ElMessage.success('Plan 已创建')
+      await strategyApi.createPlan(payload as unknown as PlanItem)
+      ElMessage.success("Plan 已创建")
     }
     dialogVisible.value = false
     resetForm()
     await loadData()
   } catch (error) {
-    ElMessage.error('保存失败')
+    ElMessage.error("保存失败")
     console.error(error)
   } finally {
     saving.value = false
@@ -202,25 +246,45 @@ async function submitForm() {
 async function publish(id: number) {
   try {
     await strategyApi.publishPlan(id)
-    ElMessage.success('Plan 已发布')
+    ElMessage.success("Plan 已发布")
     await loadData()
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || '发布失败')
+    ElMessage.error(error?.response?.data?.detail || "发布失败")
+  }
+}
+
+async function start(id: number) {
+  try {
+    await strategyApi.startPlan(id)
+    ElMessage.success("Plan 已启动")
+    await loadData()
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || "启动失败")
+  }
+}
+
+async function stop(id: number) {
+  try {
+    await strategyApi.stopPlan(id)
+    ElMessage.success("Plan 已停止")
+    await loadData()
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || "停止失败")
   }
 }
 
 async function remove(id: number) {
   try {
     const response = await fetch(`/api/plans/${id}/`, {
-      method: 'DELETE',
-      credentials: 'same-origin',
-      headers: { 'X-CSRFToken': document.cookie.match(/csrftoken=([^;]+)/)?.[1] || '' },
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { "X-CSRFToken": document.cookie.match(/csrftoken=([^;]+)/)?.[1] || "" },
     })
-    if (!response.ok) throw new Error('delete failed')
-    ElMessage.success('删除成功')
+    if (!response.ok) throw new Error("delete failed")
+    ElMessage.success("删除成功")
     await loadData()
   } catch (error) {
-    ElMessage.error('删除失败')
+    ElMessage.error("删除失败")
     console.error(error)
   }
 }
@@ -235,3 +299,4 @@ onMounted(async () => { await loadData(); const [groupResponse, symbolResponse] 
 h1 { margin: 6px 0; color: #172033; font-size: 36px; }
 p { color: #667085; }
 </style>
+
