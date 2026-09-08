@@ -165,7 +165,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import * as echarts from 'echarts'
+import { echarts } from '@/utils/echarts'
+import type { EChartsType } from '@/utils/echarts'
 import { datasourcesApi } from '@/api/datasources'
 import { watchlistsApi } from '@/api/watchlists'
 import type { DataSourceItem, KLineQueryItem, KLineSyncLogItem, RealtimeSnapshotItem } from '@/api/datasources'
@@ -186,7 +187,7 @@ const editingId = ref<number | null>(null)
 const keyword = ref('')
 const activeFilter = ref<boolean | ''>('')
 const chartRef = ref<HTMLElement | null>(null)
-let chartInstance: echarts.ECharts | null = null
+let chartInstance: EChartsType | null = null
 
 const form = ref({
   name: '',
