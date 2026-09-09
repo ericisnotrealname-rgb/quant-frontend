@@ -1,10 +1,11 @@
 # 量化交易平台 · 前端开发文档
 
-> 版本：v2.1  
-> 日期：2026-09-07  
+> 版本：v2.3  
+> 日期：2026-09-09  
 > 状态：需求冻结 · 按功能清单实现前端界面设计
 >
 > 变更记录：
+> - v2.3（2026-09-09）：新增「告警管理」与「告警渠道配置」两个模块，对接后端 `execution` 告警（Alert / AlertChannel）接口；侧边导航同步新增对应菜单项。
 > - v2.2（2026-09-07）：新增「运行状态管理」模块（对接后端 Case/Suite/Plan 三级 run_status 状态机）；Plan/Suite 管理页新增启动/停止按钮、状态标签；Case 列表新增运行状态列。
 > - v2.1（2026-09-07）：新增「资金占用管理」模块（对接后端分级资金占用链 FundAllocation）；Plan 管理表单与列表接入交易账户 ID / 占用资金字段。
 > - v2.0（2026-08-31）：需求冻结，按功能清单实现前端界面设计。
@@ -40,6 +41,8 @@
 - 执行日志
 - 触发执行
 - 事件类型管理
+- 告警管理（Alerts）
+- 告警渠道（Alert Channels）
 
 ## 二、功能模块清单
 
@@ -321,6 +324,54 @@
   - 用户自定义
 - 该模块为只读展示，不提供增删改。
 
+---
+
+### 2.10 告警管理模块（v2.3 新增）
+
+对接后端 `execution.Alert`，集中查看与处理系统中的各类告警（订单失败 / 策略执行失败 / 计划执行失败 / 风控违规 / 系统错误）。
+
+#### 2.10.1 统计概览
+- 页面顶部展示统计卡片：待处理、已确认、高 / 紧急、告警总数（来自 `GET /api/execution/alerts/statistics/` 的 `overview`）。
+
+#### 2.10.2 列表展示
+- 以表格展示告警，列包括：
+  - 级别（低 / 中 / 高 / 紧急，彩色标签）
+  - 类型
+  - 告警内容（标题 + 错误代码）
+  - 关联 Plan
+  - 状态（待处理 / 已确认 / 已解决）
+  - 通知状态（应用内 + 邮件指示灯，悬停显示详情）
+  - 创建时间
+
+#### 2.10.3 筛选
+- 支持按：关键词（标题 / 消息 / 错误代码）、告警类型、严重程度、处理状态 做筛选。
+
+#### 2.10.4 每行操作
+- 确认：仅待处理告警可操作，调用 `POST /api/execution/alerts/{id}/actions/`（`action=acknowledge`）。
+- 解决：待处理 / 已确认可操作，弹窗填写备注后提交（`action=resolve` + `note`）。
+- 详情：弹出对话框展示完整字段与消息正文；已解决 / 未解决告警可"重新发送通知"（`POST /{id}/resend-notifications/`）。
+
+---
+
+### 2.11 告警渠道配置模块（v2.3 新增）
+
+对接后端 `execution.AlertChannel`，配置应用内 / 邮件通知渠道，决定哪些告警通过何种渠道送达。
+
+#### 2.11.1 列表展示
+- 表格列：渠道类型（应用内 / 邮件）、是否启用、最低级别、邮件收件人、告警类型白名单、更新时间。
+
+#### 2.11.2 新增 / 编辑
+- 渠道类型单选（编辑时锁定）；启用开关；最低告警级别下拉；类型白名单多选（空表示全部）。
+- 邮件渠道额外提供：收件人列表（逐行输入邮件，前端做格式校验）、邮件主题前缀。
+
+#### 2.11.3 删除
+- 删除前二次确认（popconfirm）。
+
+#### 2.11.4 重新加载
+- 页面提供"重新加载"按钮，调用 `POST /api/execution/alert-channels/reload/`，使渠道配置变更立即在 `alert_service` 生效。
+
+---
+
 ## 二.10 前端模块与后端 API 对照
 
 以下为前端各模块对应的后端接口清单，确保文档与真实 Django API 保持一致。
@@ -476,6 +527,29 @@ Plan:  new → running → done      (旗下 suites 全部 done)
 #### Plan 管理页联动（`src/views/Plans.vue`）
 - 表单新增「交易账户 ID」（文本，留空则不绑定）与「占用资金总额」（数字，两位小数，留空则不启用资金管控）。
 - 列表新增「账户 ID」「占用资金」两列，空值显示 `—`。
+
+### 2.10.14 告警管理 / 告警渠道模块（v2.3 新增）
+
+对接后端 `execution.Alert` 与 `execution.AlertChannel`，实现告警的集中查看、处理与送达渠道配置。
+
+#### 数据契约
+- `Alert` 字段：`alert_type`（`order_failed` / `suite_failed` / `plan_failed` / `risk_violation` / `system_error`）、`severity`（`low` / `medium` / `high` / `critical`）、`status`（`pending` / `acknowledged` / `resolved`）、`title`、`message`、`error_code`、`plan` / `plan_name`、`suite_run`、`order`、`in_app_notified`、`email_notified`、`notification_error`、`acknowledged_by/at`、`resolved_by/at`、`created_at/updated_at`，以及 `*_display` 展示字段。
+- `AlertChannel` 字段：`channel_type`（`in_app` / `email`，唯一）、`is_enabled`、`email_recipients`（邮件渠道收件人列表）、`email_subject_prefix`、`min_severity`（最低级别）、`alert_types`（类型白名单，空 = 全部）。
+
+#### 接口
+- 告警列表：`GET /api/execution/alerts/`（支持 `alert_type` / `severity` / `status` / `plan` 过滤与 `search` 搜索）
+- 告警详情：`GET /api/execution/alerts/<id>/`
+- 告警统计：`GET /api/execution/alerts/statistics/`（返回 `overview` + `by_type`）
+- 告警操作（确认 / 解决）：`POST /api/execution/alerts/<id>/actions/`
+- 重新发送通知：`POST /api/execution/alerts/<id>/resend-notifications/`
+- 渠道列表：`GET /api/execution/alert-channels/`
+- 渠道新增 / 更新 / 删除：`POST /api/execution/alert-channels/`、`PATCH /api/execution/alert-channels/<id>/`、`DELETE /api/execution/alert-channels/<id>/`
+- 渠道重载：`POST /api/execution/alert-channels/reload/`
+
+#### 页面实现
+- 告警管理（`src/views/Alerts.vue`，路由 `/alerts`）：统计卡片 + 筛选工具栏 + 告警表格；行内确认 / 解决（备注弹窗）/ 详情；详情对话框展示字段与消息正文，支持重新发送通知。
+- 告警渠道（`src/views/AlertChannels.vue`，路由 `/alert-channels`）：渠道表格；新增 / 编辑弹窗（邮件渠道逐行收件人 + 前端邮箱格式校验）；删除二次确认；"重新加载"按钮调用渠道重载接口。
+- 侧边导航（`src/layouts/DefaultLayout.vue`）与路由（`src/router/index.ts`）：新增「告警管理」「告警渠道」菜单与 `/alerts`、`/alert-channels` 路由。
 
 ## 三、交互与反馈要求
 

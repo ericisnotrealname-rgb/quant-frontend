@@ -114,3 +114,62 @@ export interface Paginated<T> {
   previous: string | null
   results: T[]
 }
+
+export type AlertType = 'order_failed' | 'suite_failed' | 'plan_failed' | 'risk_violation' | 'system_error'
+export type AlertSeverity = 'low' | 'medium' | 'high' | 'critical'
+export type AlertStatus = 'pending' | 'acknowledged' | 'resolved'
+
+export interface Alert {
+  id: number
+  alert_type: AlertType
+  alert_type_display: string
+  severity: AlertSeverity
+  severity_display: string
+  status: AlertStatus
+  status_display: string
+  plan: number | null
+  plan_name: string | null
+  suite_run: number | null
+  suite_run_display: string | null
+  order: number | null
+  title: string
+  message: string
+  error_code: string | null
+  in_app_notified: boolean
+  email_notified: boolean
+  notification_error: string
+  acknowledged_by: number | null
+  acknowledged_at: string | null
+  resolved_by: number | null
+  resolved_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type AlertChannelType = 'in_app' | 'email'
+
+export interface AlertChannel {
+  id: number
+  channel_type: AlertChannelType
+  channel_type_display: string
+  is_enabled: boolean
+  email_recipients: string[]
+  email_subject_prefix: string
+  min_severity: AlertSeverity
+  min_severity_display: string
+  alert_types: AlertType[]
+  created_at: string
+  updated_at: string
+}
+
+export interface AlertStatistics {
+  overview: {
+    total: number
+    pending: number
+    acknowledged: number
+    resolved: number
+    high_severity: number
+    critical_severity: number
+  }
+  by_type: { alert_type: AlertType; count: number }[]
+}

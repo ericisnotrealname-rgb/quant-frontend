@@ -81,6 +81,18 @@ const router = createRouter({
       meta: { title: '事件类型', requiresAuth: true },
     },
     {
+      path: '/alerts',
+      name: 'alerts',
+      component: () => import('@/views/Alerts.vue'),
+      meta: { title: '告警管理', requiresAuth: true },
+    },
+    {
+      path: '/alert-channels',
+      name: 'alert-channels',
+      component: () => import('@/views/AlertChannels.vue'),
+      meta: { title: '告警渠道', requiresAuth: true },
+    },
+    {
       path: '/designer',
       name: 'designer',
       component: () => import('@/views/Designer.vue'),
