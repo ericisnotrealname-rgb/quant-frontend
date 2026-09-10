@@ -209,6 +209,29 @@ const showMacd = ref(false)
 const showKdj = ref(false)
 const showRsi = ref(false)
 
+// ================= 增量数据加载：根据缩放范围自动查询日期 =================
+const autoFetching = ref(false)
+let loadedStart = '' // 当前已加载数据的最早日期
+let loadedEnd = '' // 当前已加载数据的最晚日期
+const autoSyncedRanges = new Set<string>() // 已尝试自动同步的日期范围，防止死循环
+let zoomStart = 60 // dataZoom 当前 start 百分比
+let zoomEnd = 100 // dataZoom 当前 end 百分比
+let zoomDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+// 切换标的时重置增量加载状态
+watch(
+  () => syncForm.value.symbol,
+  () => {
+    klineRows.value = []
+    loadedStart = ''
+    loadedEnd = ''
+    autoSyncedRanges.clear()
+    zoomStart = 60
+    zoomEnd = 100
+    chartInstance?.clear()
+  },
+)
+
 // ================= 修复：动态计算总高度（包含底部滑块空间） =================
 const chartHeight = computed(() => {
   const mainHeight = 280
@@ -325,6 +348,33 @@ async function loadSymbolOptions() {
   }
 }
 
+async function autoSyncAndQuery(symbol: string, start: string, end: string): Promise<KLineQueryItem[]> {
+  const rangeKey = `${symbol}~${start}~${end}`
+  if (autoSyncedRanges.has(rangeKey)) return []
+  autoSyncedRanges.add(rangeKey)
+  try {
+    const response = await datasourcesApi.syncKline({
+      symbol,
+      sync_type: syncForm.value.sync_type,
+      start_date: start,
+      end_date: end,
+      adjust: 'qfq',
+    })
+    if (response.data.error) {
+      ElMessage.warning(`自动拉取数据失败：${response.data.error}`)
+    } else {
+      ElMessage.success(`已自动拉取 ${response.data.added} 条新数据`)
+      await loadSyncLogs()
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.warning('自动拉取新数据失败，请手动同步')
+    return []
+  }
+  const retry = await datasourcesApi.queryKline({ symbol, start, end })
+  return retry.data
+}
+
 async function handleQueryKline(showMessage = true) {
   if (!syncForm.value.symbol) {
     ElMessage.warning('请选择一个标的后再查询')
@@ -336,20 +386,117 @@ async function handleQueryKline(showMessage = true) {
     return
   }
 
+  const symbol = syncForm.value.symbol
+  const start = syncForm.value.start_date
+  const end = syncForm.value.end_date
+
   try {
-    const response = await datasourcesApi.queryKline({
-      symbol: syncForm.value.symbol,
-      start: syncForm.value.start_date,
-      end: syncForm.value.end_date,
-    })
-    klineRows.value = response.data
+    let rows = (await datasourcesApi.queryKline({ symbol, start, end })).data
+    if (!isRangeCovered(rows, start, end)) {
+      // 查询结果未完全覆盖查询天数时，自动拉取新数据后重查一次
+      rows = await autoSyncAndQuery(symbol, start, end)
+    }
+
+    loadedStart = start
+    loadedEnd = end
+    klineRows.value = rows
+    zoomStart = 60
+    zoomEnd = 100
+    autoSyncedRanges.clear()
 
     if (showMessage) {
-      ElMessage.success(`已查询到 ${response.data.length} 条 K 线记录`)
+      ElMessage.success(`已查询到 ${rows.length} 条 K 线记录`)
     }
   } catch (error) {
     console.error(error)
     ElMessage.error('K 线查询失败')
+  }
+}
+
+async function fetchForRange(fetchStart: string, fetchEnd: string) {
+  const symbol = syncForm.value.symbol
+  if (!symbol || autoFetching.value) return
+
+  autoFetching.value = true
+  try {
+    let rows = (await datasourcesApi.queryKline({ symbol, start: fetchStart, end: fetchEnd })).data
+    if (!isRangeCovered(rows, fetchStart, fetchEnd)) {
+      // 返回数据未完全覆盖查询天数时，自动拉取新数据后重查一次
+      rows = await autoSyncAndQuery(symbol, fetchStart, fetchEnd)
+    }
+    if (rows.length) {
+      mergeKlineRows(rows)
+    }
+  } catch (error) {
+    console.error(error)
+  } finally {
+    autoFetching.value = false
+  }
+}
+
+// 边界容差天数：容忍查询区间两端的双休日 / 节假日（无交易日）
+const DATE_BOUNDARY_TOLERANCE_DAYS = 7
+
+/**
+ * 判断返回的 K 线数据是否完全覆盖查询区间：
+ * 区间内最早返回的记录需落在区间起点（含容差）之前或当天，
+ * 最晚返回的记录需落在区间终点（含容差）之前或当天，
+ * 否则视为该区间数据不完整，需要触发自动同步拉取。
+ */
+function isRangeCovered(rows: KLineQueryItem[], start: string, end: string) {
+  if (!rows.length) return false
+  const earliest = rows.reduce((min, row) => (row.date < min ? row.date : min), rows[0].date)
+  const latest = rows.reduce((max, row) => (row.date > max ? row.date : max), rows[0].date)
+  return earliest <= shiftDate(start, DATE_BOUNDARY_TOLERANCE_DAYS) && latest >= shiftDate(end, -DATE_BOUNDARY_TOLERANCE_DAYS)
+}
+
+function shiftDate(dateStr: string, days: number) {
+  const date = new Date(dateStr)
+  date.setDate(date.getDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+function mergeKlineRows(newRows: KLineQueryItem[]) {
+  const map = new Map<string, KLineQueryItem>()
+  for (const row of klineRows.value) map.set(row.date, row)
+  for (const row of newRows) {
+    map.set(row.date, row)
+    if (!loadedStart || row.date < loadedStart) loadedStart = row.date
+    if (!loadedEnd || row.date > loadedEnd) loadedEnd = row.date
+  }
+  klineRows.value = [...map.values()]
+  // merge 后由 watch(klineRows) 触发全量重绘，缩放百分比通过 zoomStart/zoomEnd 保留
+}
+
+function handleChartZoom() {
+  if (!chartInstance) return
+  const option = chartInstance.getOption() as { dataZoom?: Array<{ start?: number; end?: number }> }
+  const dz = option?.dataZoom?.[0]
+  if (!dz) return
+  zoomStart = dz.start ?? zoomStart
+  zoomEnd = dz.end ?? zoomEnd
+
+  const total = klineRows.value.length
+  if (!total || !syncForm.value.symbol) return
+
+  const sorted = [...klineRows.value].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+  const startIdx = Math.max(0, Math.floor((zoomStart / 100) * (total - 1)))
+  const endIdx = Math.min(total - 1, Math.ceil((zoomEnd / 100) * (total - 1)))
+  const viewStart = sorted[startIdx]?.date
+  const viewEnd = sorted[endIdx]?.date
+  if (!viewStart || !viewEnd) return
+
+  const earliestLoaded = sorted[0].date
+  // 可见窗口最左侧（日期最早）的数据就是已加载 Rows 中的最早记录 → 用户已拖到左边界，向前增量查询
+  if (viewStart <= earliestLoaded) {
+    // 按当前可见窗口宽度向左扩展查询范围
+    const windowDays = Math.max(10, Math.ceil((new Date(viewEnd).getTime() - new Date(viewStart).getTime()) / 86400000))
+    const fetchStart = shiftDate(earliestLoaded, -windowDays)
+    // 已加载范围更早时无需重复拉取
+    if (loadedStart && fetchStart >= loadedStart) return
+
+    if (zoomDebounceTimer) clearTimeout(zoomDebounceTimer)
+    zoomDebounceTimer = setTimeout(() => void fetchForRange(fetchStart, earliestLoaded), 400)
   }
 }
 
@@ -379,6 +526,7 @@ async function handleSyncKline() {
     if (error) {
       ElMessage.warning(error)
     }
+    autoSyncedRanges.clear() // 手动同步后允许自动拉取再次尝试
 
     await Promise.all([loadSyncLogs(), handleQueryKline(false)])
   } catch (error) {
@@ -583,6 +731,8 @@ function renderKlineChart(rows: KLineQueryItem[]) {
 
   if (!chartInstance) {
     chartInstance = echarts.init(chartRef.value)
+    // 缩放变化时根据可见日期范围增量拉取数据
+    chartInstance.on('datazoom', handleChartZoom)
   }
 
   const sortedRows = [...rows].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
@@ -941,15 +1091,15 @@ function renderKlineChart(rows: KLineQueryItem[]) {
     dataZoom: [
       {
         type: 'inside',
-        start: 60,
-        end: 100,
+        start: zoomStart,
+        end: zoomEnd,
         xAxisIndex: xAxis.map((_, i) => i),
       },
       {
         type: 'slider',
         show: true,
-        start: 60,
-        end: 100,
+        start: zoomStart,
+        end: zoomEnd,
         bottom: 10,
       },
     ],
@@ -972,12 +1122,17 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  if (zoomDebounceTimer) clearTimeout(zoomDebounceTimer)
   chartInstance?.dispose()
 })
 
 onMounted(async () => {
   defaultDateRange()
   await Promise.all([loadSources(), loadSnapshots(), loadSyncLogs(), loadSymbolOptions()])
+  // 标的已自动选中时直接查询并绘制 K 线
+  if (syncForm.value.symbol && syncForm.value.start_date && syncForm.value.end_date) {
+    await handleQueryKline(false)
+  }
 })
 </script>
 
