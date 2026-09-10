@@ -3,7 +3,7 @@ import type { CaseItem, FundAllocation, PlanItem, SuiteItem } from '@/types/api'
 
 export const strategyApi = {
   cases(params?: Record<string, unknown>) {
-    return api.get<CaseItem[]>('/cases/', { params })
+    return api.get<CaseItem[]>('/cases/', { params: { page_size: 500, ...params } })
   },
   createCase(data: Partial<CaseItem>) {
     return api.post<CaseItem>('/cases/', data)
@@ -15,7 +15,7 @@ export const strategyApi = {
     return api.post<CaseItem>(`/cases/${id}/publish/`)
   },
   suites(params?: Record<string, unknown>) {
-    return api.get<SuiteItem[]>('/suites/', { params })
+    return api.get<SuiteItem[]>('/suites/', { params: { page_size: 500, ...params } })
   },
   createSuite(data: Partial<SuiteItem> & { case_ids?: number[] }) {
     return api.post<SuiteItem>('/suites/', data)
@@ -33,7 +33,7 @@ export const strategyApi = {
     return api.post<SuiteItem>(`/suites/${id}/stop/`)
   },
   plans(params?: Record<string, unknown>) {
-    return api.get<PlanItem[]>('/plans/', { params })
+    return api.get<PlanItem[]>('/plans/', { params: { page_size: 500, ...params } })
   },
   createPlan(data: Partial<PlanItem>) {
     return api.post<PlanItem>('/plans/', data)
@@ -48,7 +48,7 @@ export const strategyApi = {
     return api.post<PlanItem>(`/plans/${id}/stop/`)
   },
   fundAllocations(params?: Record<string, unknown>) {
-    return api.get<FundAllocation[]>('/execution/fund-allocations/', { params })
+    return api.get<FundAllocation[]>('/execution/fund-allocations/', { params: { page_size: 500, ...params } })
   },
   createFundAllocation(data: Partial<FundAllocation>) {
     return api.post<FundAllocation>('/execution/fund-allocations/', data)

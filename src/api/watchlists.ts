@@ -3,7 +3,8 @@ import type { GroupItem, SymbolItem, Watchlist } from '@/types/api'
 
 export const watchlistsApi = {
   symbols(params?: Record<string, unknown>) {
-    return api.get<SymbolItem[]>('/watchlists/symbols/', { params })
+    // 旧客户端默认拉取较大单页（limit 为后端分页的兼容别名）
+    return api.get<SymbolItem[]>('/watchlists/symbols/', { params: { page_size: 500, ...params } })
   },
   createSymbol(data: Partial<SymbolItem>) {
     return api.post<SymbolItem>('/watchlists/symbols/', data)
@@ -20,7 +21,7 @@ export const watchlistsApi = {
     })
   },
   groups(params?: Record<string, unknown>) {
-    return api.get<GroupItem[]>('/watchlists/groups/', { params })
+    return api.get<GroupItem[]>('/watchlists/groups/', { params: { page_size: 500, ...params } })
   },
   createGroup(data: { name: string; symbol_ids?: number[] }) {
     return api.post<GroupItem>('/watchlists/groups/', data)

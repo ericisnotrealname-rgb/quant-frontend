@@ -62,7 +62,7 @@ export interface KLineQueryItem {
 
 export const datasourcesApi = {
   sources(params?: Record<string, unknown>) {
-    return api.get<DataSourceItem[]>('/datasources/sources/', { params })
+    return api.get<DataSourceItem[]>('/datasources/sources/', { params: { page_size: 500, ...params } })
   },
   createSource(data: Partial<DataSourceItem> & { auth_info?: Record<string, unknown> }) {
     return api.post<DataSourceItem>('/datasources/sources/', data)
@@ -74,13 +74,13 @@ export const datasourcesApi = {
     return api.delete(`/datasources/sources/${id}/`)
   },
   snapshots(params?: Record<string, unknown>) {
-    return api.get<RealtimeSnapshotItem[]>('/datasources/snapshots/', { params })
+    return api.get<RealtimeSnapshotItem[]>('/datasources/snapshots/', { params: { page_size: 500, ...params } })
   },
   syncLogs(params?: Record<string, unknown>) {
-    return api.get<KLineSyncLogItem[]>('/datasources/sync-logs/', { params })
+    return api.get<KLineSyncLogItem[]>('/datasources/sync-logs/', { params: { page_size: 500, ...params } })
   },
   queryKline(params: { symbol: string; start: string; end: string }) {
-    return api.get<KLineQueryItem[]>('/datasources/kline/query/', { params })
+    return api.get<KLineQueryItem[]>('/datasources/kline/query/', { params: { page_size: 500, ...params } })
   },
   syncKline(data: {
     symbol: string
