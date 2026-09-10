@@ -291,7 +291,7 @@ function sourceTypeTag(type: string) {
 function defaultDateRange() {
   const end = new Date()
   const start = new Date()
-  start.setDate(end.getDate() - 30)
+  start.setDate(end.getDate() - 300)
 
   const format = (date: Date) => date.toISOString().slice(0, 10)
   syncForm.value.start_date = format(start)

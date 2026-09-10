@@ -80,7 +80,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { watchlistsApi } from '@/api/watchlists'
+import { datasourcesApi } from '@/api/datasources'
 import type { SymbolItem } from '@/types/api'
+
+// 新增标的成功后自动拉取的历史 K 线天数
+const AUTO_SYNC_DAYS = 300
 
 const symbols = ref<SymbolItem[]>([])
 const search = ref('')
@@ -161,6 +165,39 @@ async function loadData() {
   }
 }
 
+function formatISODate(date: Date) {
+  return date.toISOString().slice(0, 10)
+}
+
+/**
+ * 新增标的后自动拉取近 300 天日线数据（后台执行，不阻塞页面）。
+ * 成功 / 失败均给出提示；失败不影响标的本身的创建结果。
+ */
+async function autoSyncNewSymbol(code: string) {
+  const end = new Date()
+  const start = new Date()
+  start.setDate(end.getDate() - AUTO_SYNC_DAYS)
+
+  try {
+    const response = await datasourcesApi.syncKline({
+      symbol: code,
+      sync_type: 'daily',
+      start_date: formatISODate(start),
+      end_date: formatISODate(end),
+      adjust: 'qfq',
+    })
+    const { added, skipped, error } = response.data
+    if (error) {
+      ElMessage.warning(`标的 ${code} 历史数据自动拉取未完成：${error}`)
+    } else {
+      ElMessage.success(`标的 ${code} 已自动拉取近 ${AUTO_SYNC_DAYS} 天 K 线：新增 ${added} 条，跳过 ${skipped} 条`)
+    }
+  } catch (cause) {
+    ElMessage.warning(`标的 ${code} 自动拉取近 ${AUTO_SYNC_DAYS} 天 K 线失败，可到「数据源管理」手动同步`)
+    console.error(cause)
+  }
+}
+
 async function submitForm() {
   if (!form.value.code) {
     ElMessage.warning('代码不能为空')
@@ -177,15 +214,23 @@ async function submitForm() {
   saving.value = true
   try {
     const payload = { ...form.value }
-    if (editingId.value) {
-      await watchlistsApi.updateSymbol(editingId.value, payload)
+    const editingIdSnapshot = editingId.value
+    const isEdit = editingIdSnapshot !== null
+    let createdCode = ''
+    if (isEdit && editingIdSnapshot !== null) {
+      await watchlistsApi.updateSymbol(editingIdSnapshot, payload)
     } else {
-      await watchlistsApi.createSymbol(payload)
+      const created = (await watchlistsApi.createSymbol(payload)).data
+      createdCode = created.code || payload.code
     }
     dialogVisible.value = false
     resetForm()
-    ElMessage.success(editingId.value ? '标的已更新' : '新增标的成功')
+    ElMessage.success(isEdit ? '标的已更新' : '新增标的成功')
     await loadData()
+    if (!isEdit && createdCode) {
+      // 新增标的后自动拉取近 300 天 K 线数据（后台执行，不阻塞页面）
+      void autoSyncNewSymbol(createdCode)
+    }
   } catch (error) {
     ElMessage.error('保存失败')
     console.error(error)
