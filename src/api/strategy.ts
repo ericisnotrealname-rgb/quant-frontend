@@ -1,5 +1,5 @@
 import api from './index'
-import type { CaseItem, FundAllocation, PlanItem, SuiteItem } from '@/types/api'
+import type { CaseItem, FundAllocation, PlanItem, SuiteItem, TopologyPayload } from '@/types/api'
 
 export const strategyApi = {
   cases(params?: Record<string, unknown>) {
@@ -16,6 +16,9 @@ export const strategyApi = {
   },
   suites(params?: Record<string, unknown>) {
     return api.get<SuiteItem[]>('/suites/', { params })
+  },
+  suiteTopology(id: number) {
+    return api.get<TopologyPayload>(`/suites/${id}/topology/`)
   },
   createSuite(data: Partial<SuiteItem> & { case_ids?: number[] }) {
     return api.post<SuiteItem>('/suites/', data)

@@ -33,9 +33,13 @@
             <el-icon><Document /></el-icon>
             <template #title>Case 管理</template>
           </el-menu-item>
-          <el-menu-item index="/suites">
+                    <el-menu-item index="/suites">
             <el-icon><Connection /></el-icon>
             <template #title>Suite 管理</template>
+          </el-menu-item>
+          <el-menu-item index="/designer">
+            <el-icon><Setting /></el-icon>
+            <template #title>策略设计器</template>
           </el-menu-item>
           <el-menu-item index="/plans">
             <el-icon><Calendar /></el-icon>

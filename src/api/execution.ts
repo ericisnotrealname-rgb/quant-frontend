@@ -1,5 +1,5 @@
 import api from './index'
-import type { Alert, AlertChannel, AlertStatistics, ExecutionLog, Order, SuiteRun } from '@/types/api'
+import type { Alert, AlertChannel, AlertStatistics, EventItem, EventTypeItem, ExecutionLog, NodeRunItem, Order, SuiteRun } from '@/types/api'
 
 function unwrapList<T>(data: unknown): T[] {
   return Array.isArray(data) ? data : (data as { results?: T[] })?.results ?? []
@@ -14,6 +14,15 @@ export const executionApi = {
   },
   runs(params?: Record<string, unknown>) {
     return api.get<SuiteRun[]>('/execution/runs/', { params })
+  },
+  runNodeRuns(runId: number) {
+    return api.get<NodeRunItem[]>(`/execution/runs/${runId}/node-runs/`)
+  },
+  events(params?: Record<string, unknown>) {
+    return api.get<EventItem[]>('/execution/events/', { params })
+  },
+  eventTypesAll() {
+    return api.get<EventTypeItem[]>('/execution/event-types/list-all/', { params: { include_system: true } })
   },
   trigger(planId: number, symbols: string[], payload?: Record<string, unknown>) {
     return api.post<{ run_ids: number[] }>('/execution/trigger/', {

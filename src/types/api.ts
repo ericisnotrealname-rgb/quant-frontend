@@ -68,6 +68,72 @@ export interface SuiteRun {
   created_at: string
 }
 
+export interface NodeRunItem {
+  id: number
+  run: number
+  parent: number | null
+  node_type: 'suite' | 'case'
+  node_type_display: string
+  suite: number | null
+  suite_name: string | null
+  case: number | null
+  case_name: string | null
+  symbol: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  status_display: string
+  direction: -1 | 0 | 1
+  result: Record<string, unknown>
+  started_at: string
+  ended_at: string | null
+}
+
+export interface EventItem {
+  id: number
+  run: number
+  event_type: string
+  source: string
+  payload: Record<string, unknown>
+  status: 'pending' | 'processing' | 'done' | 'failed'
+  created_at: string
+  processed_at: string | null
+}
+
+export interface TopologyEdgeItem {
+  id: number
+  from_suite: number
+  to_suite: number
+  condition: Record<string, unknown>
+  event_condition: {
+    event_type: string
+    case_id?: number
+    next_event?: string
+    op?: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'between'
+    field?: string
+    threshold?: number | [number, number]
+  }
+  weight: number
+}
+
+export interface TopologyCaseItem {
+  id: number
+  name: string
+  node_type: CaseItem['node_type']
+  status: CaseItem['status']
+  params: Record<string, unknown>
+}
+
+export interface TopologyPayload {
+  suite: SuiteItem
+  cases: TopologyCaseItem[]
+  edges: TopologyEdgeItem[]
+}
+
+export interface EventTypeItem {
+  name: string
+  scope: 'system' | 'plugin' | 'user'
+  description: string
+}
+
 export interface CaseItem {
   id: number
   name: string
