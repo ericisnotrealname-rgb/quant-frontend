@@ -5,6 +5,7 @@
 > 状态：需求冻结 · 按功能清单实现前端界面设计
 >
 > 变更记录：
+> - v2.4（2026-09-10）：新增「策略设计器」模块（对接后端 Suite 拓扑与 NodeRun 轨迹接口）；基于 @vue-flow/core 实现画布拖拽编排、编排边条件配置与执行轨迹回放；侧边导航同步新增菜单项。
 > - v2.3（2026-09-09）：新增「告警管理」与「告警渠道配置」两个模块，对接后端 `execution` 告警（Alert / AlertChannel）接口；侧边导航同步新增对应菜单项。
 > - v2.2（2026-09-07）：新增「运行状态管理」模块（对接后端 Case/Suite/Plan 三级 run_status 状态机）；Plan/Suite 管理页新增启动/停止按钮、状态标签；Case 列表新增运行状态列。
 > - v2.1（2026-09-07）：新增「资金占用管理」模块（对接后端分级资金占用链 FundAllocation）；Plan 管理表单与列表接入交易账户 ID / 占用资金字段。
@@ -35,6 +36,7 @@
 - 分组管理（Group）
 - Case 管理
 - Suite 管理
+- 策略设计器
 - Plan 管理
 - 运行状态（Run Status）
 - 资金占用（Fund Allocations）
@@ -224,6 +226,41 @@
 #### 2.5.5 发布规则
 - 发布时自动递归校验所有子节点已发布。
 - 若子节点未发布，发布应被阻止并给出明确提示。
+
+---
+
+### 2.6.5 策略设计器
+
+#### 2.6.5.1 概述
+- 提供基于 `@vue-flow/core` 的可视化编排画布，用户通过拖拽节点与连线配置 Suite 拓扑。
+- 路线 `/designer`（`src/views/Designer.vue`），导航菜单「策略设计器」。
+- 拓扑保存时向后端 `POST /api/suites/{id}/topology/` 写入，加载时调用 `GET /api/suites/{id}/topology/` 读取。
+
+#### 2.6.5.2 节点面板
+- 左侧面板展示两种可拖拽节点类型：Case（信号/过滤/裁决/执行器）、子 Suite。
+- 拖拽进入画布后自动创建对应类型的节点，并根据节点类型显示不同颜色标签。
+
+#### 2.6.5.3 编排画布
+- VueFlow 5.x 支撑画布：支持缩放、平移、网格背景、MiniMap、 Controls。
+- 从根 Suite 拖出**成员边**（实线，连接到 Case）和**编排边**（实线，连接到子 Suite）。
+- 双击编排边弹出「编排边条件」对话框，配置 `event_condition`：
+  - 触发事件（下拉或输入，来自 `GET /api/execution/event-types/list-all/`）。
+  - 来源 Case ID（可选）。
+  - 后续事件（可选）。
+  - 条件操作符（开关）：`op`（`eq`/`neq`/`gt`/`gte`/`lt`/`lte`/`between`） + `field` + `threshold`。
+- 按 Backspace/Delete 删除节点与连线；点击节点右上角 `×` 可将 Case 移出编排。
+- 节点标示运行状态（`runStatus`）：pending/running/completed/failed/skipped，对应颜色标签。
+
+#### 2.6.5.4 操作栏
+- **刷新**：重新从 `GET /api/suites/{id}/topology/` 加载拓扑。
+- **保存拓扑**：提交当前画布状态到 `POST /api/suites/{id}/topology/`，成功后显示 ElMessage 成功提示。
+- **发布**：弹出二次确认后调用 `POST /api/suites/{id}/publish/`，失败时显示错误信息。
+- **执行轨迹回放**：开启回放模式，从 `GET /api/execution/runs/` 选取历史 SuiteRun，回放节点状态与事件序列。
+
+#### 2.6.5.5 执行轨迹回放
+- 回放面板右侧显示步进控制（上一步/下一步/自动播放/速度）。
+- 左侧为历史事件列表，当前执行中高亮。
+- 回放数据来自 `GET /api/execution/run/{run_id}/node-runs/`。
 
 ---
 
@@ -437,6 +474,7 @@
 - 查看拓扑：`GET /api/suites/<id>/topology/`
 - 更新拓扑：`POST /api/suites/<id>/topology/`
 - 发布 Suite：`POST /api/suites/<id>/publish/`
+- 节点运行轨迹（回放用）：`GET /api/execution/run/<run_id>/node-runs/`
 
 ### 2.10.7 Plan 管理模块
 - Plan 列表：`GET /api/plans/`
@@ -623,10 +661,10 @@ Plan:  new → running → done      (旗下 suites 全部 done)
 3. 分组管理
 4. Case / Suite / Plan 基础 CRUD
 5. 执行日志与手动触发
+6. ✅ Suite 拓扑可视化编排（策略设计器，画布拖拽 + 执行轨迹回放）
 
 ### P1：战略增强
-1. Suite 拓扑可视化
-2. Plan 发布与运行状态追踪
+1. Plan 发布与运行状态追踪
 3. 事件类型只读列表
 4. 更丰富的表单校验和提示
 
@@ -642,7 +680,7 @@ Plan:  new → running → done      (旗下 suites 全部 done)
 
 - 侧边导航可折叠，且状态持久化
 - 登录/注册/登出/个人资料流程可用
-- 标的、分组、Case、Suite、Plan、执行日志、触发执行、事件类型、告警管理及告警渠道均具备对应界面
+- 标的、分组、Case、Suite、Plan、执行日志、触发执行、事件类型、告警管理及告警渠道、策略设计器均具备对应界面
 - 异步状态、二次确认、空状态和错误提示具备完整交互
 - 所有页面适配桌面端与移动端
 - 所有非 GET 请求附带 CSRF Token
