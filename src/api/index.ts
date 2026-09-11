@@ -31,7 +31,23 @@ api.interceptors.request.use(
 );
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // 兼容统一分页响应（N-01）：后端列表接口统一返回
+    // { count, next, previous, page, total_pages, results }，
+    // 旧客户端将 response.data 直接作为结果数组使用，
+    // 这里统一解包 results，保持旧页面字段兼容、无需逐页改动。
+    const data = response.data;
+    if (
+      data &&
+      typeof data === 'object' &&
+      !Array.isArray(data) &&
+      Array.isArray(data.results) &&
+      typeof data.count === 'number'
+    ) {
+      response.data = data.results;
+    }
+    return response;
+  },
   (error) => {
     console.error('API Error:', error);
     return Promise.reject(error);

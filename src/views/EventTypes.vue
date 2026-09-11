@@ -30,10 +30,11 @@ const loading = ref(false)
 async function loadData() {
   loading.value = true
   try {
-    const response = await fetch('/api/execution/event-types/list-all/?include_system=true', { credentials: 'same-origin' })
+    const response = await fetch('/api/execution/event-types/list-all/?include_system=true&page_size=500', { credentials: 'same-origin' })
     const payload = await response.json()
     if (!response.ok) throw new Error('list event types failed')
-    eventTypes.value = Array.isArray(payload) ? payload : []
+    // 兼容统一分页响应：直接数组或 { results: [...] } 均可
+    eventTypes.value = Array.isArray(payload) ? payload : (Array.isArray(payload?.results) ? payload.results : [])
   } catch (error) {
     ElMessage.error('事件类型加载失败')
     console.error(error)

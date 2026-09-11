@@ -7,13 +7,13 @@ function unwrapList<T>(data: unknown): T[] {
 
 export const executionApi = {
   logs(params?: Record<string, unknown>) {
-    return api.get<ExecutionLog[]>('/execution/logs/', { params })
+    return api.get<ExecutionLog[]>('/execution/logs/', { params: { page_size: 500, ...params } })
   },
   orders(params?: Record<string, unknown>) {
-    return api.get<Order[]>('/execution/orders/', { params })
+    return api.get<Order[]>('/execution/orders/', { params: { page_size: 500, ...params } })
   },
   runs(params?: Record<string, unknown>) {
-    return api.get<SuiteRun[]>('/execution/runs/', { params })
+    return api.get<SuiteRun[]>('/execution/runs/', { params: { page_size: 500, ...params } })
   },
   runNodeRuns(runId: number) {
     return api.get<NodeRunItem[]>(`/execution/runs/${runId}/node-runs/`)
@@ -34,7 +34,7 @@ export const executionApi = {
 
   // 告警
   alerts(params?: Record<string, unknown>) {
-    return api.get<Alert[]>('/execution/alerts/', { params })
+    return api.get<Alert[]>('/execution/alerts/', { params: { page_size: 500, ...params } })
   },
   alert(id: number) {
     return api.get<Alert>(`/execution/alerts/${id}/`)
@@ -51,7 +51,7 @@ export const executionApi = {
 
   // 告警渠道
   alertChannels() {
-    return api.get<AlertChannel[]>('/execution/alert-channels/')
+    return api.get<AlertChannel[]>('/execution/alert-channels/', { params: { page_size: 500 } })
   },
   createAlertChannel(payload: Partial<AlertChannel>) {
     return api.post<AlertChannel>('/execution/alert-channels/', payload)
