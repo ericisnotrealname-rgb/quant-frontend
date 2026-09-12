@@ -93,6 +93,12 @@ const router = createRouter({
       meta: { title: '告警渠道', requiresAuth: true },
     },
     {
+      path: '/monitoring',
+      name: 'monitoring',
+      component: () => import('@/views/Monitoring.vue'),
+      meta: { title: '分时监控', requiresAuth: true },
+    },
+    {
       path: '/designer',
       name: 'designer',
       component: () => import('@/views/Designer.vue'),

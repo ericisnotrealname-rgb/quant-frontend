@@ -69,6 +69,10 @@
             <el-icon><Setting /></el-icon>
             <template #title>告警渠道</template>
           </el-menu-item>
+          <el-menu-item index="/monitoring">
+            <el-icon><Odometer /></el-icon>
+            <template #title>分时监控</template>
+          </el-menu-item>
         </el-menu>
       </el-aside>
 
@@ -119,7 +123,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElAside, ElAvatar, ElButton, ElContainer, ElDropdown, ElDropdownItem, ElDropdownMenu, ElHeader, ElIcon, ElMain, ElMenu, ElMenuItem } from 'element-plus'
-import { Bell, Calendar, Connection, DataAnalysis, Document, Expand, Folder, Fold, Setting, TrendCharts, User, VideoPlay, Wallet, Warning } from '@element-plus/icons-vue'
+import { Bell, Calendar, Connection, DataAnalysis, Document, Expand, Folder, Fold, Odometer, Setting, TrendCharts, User, VideoPlay, Wallet, Warning } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
