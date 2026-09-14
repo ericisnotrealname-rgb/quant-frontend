@@ -65,7 +65,7 @@
       <div v-if="points.length" ref="chartRef" class="chart" />
       <el-empty
         v-else-if="!loading"
-        description="暂无分时数据：交易时段内由 sample_intraday 命令每分钟采样写入（外部 cron 触发）"
+        description="暂无分时数据：交易时段内由服务进程内部更新器每分钟自动采样写入"
         :image-size="80"
       />
     </section>
@@ -73,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { echarts } from '@/utils/echarts'
 import type { EChartsType } from '@/utils/echarts'
@@ -95,6 +95,7 @@ const streamActive = ref(false)
 const chartRef = ref<HTMLElement | null>(null)
 
 let chartInstance: EChartsType | null = null
+let chartEl: HTMLElement | null = null
 let timer: ReturnType<typeof setInterval> | null = null
 let streamHandle: { close: () => void } | null = null
 // SSE 连续错误计数：EventSource 会自动重连；连续多次失败且未收到任何消息时降级回轮询
@@ -229,12 +230,21 @@ function applyPayload(data: IntradayPayload) {
     byTs.set(point.ts, point)
   }
   points.value = [...byTs.values()].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
-  renderChart()
+  // points 从空到非空会触发 v-if 重建图表 div；DOM 更新在 nextTick，
+  // 必须等渲染完成后再画图，否则 chartRef 为 null 提前 return（表现为进入页面白图，需手动刷新）
+  void nextTick().then(renderChart)
   if (!streamActive.value) schedulePolling()
 }
 
 function renderChart() {
   if (!chartRef.value) return
+  // v-if 切换（清空数据/切换标的）会重建图表 div；DOM 元素变化时必须重建实例，
+  // 否则旧实例仍绑定在已脱离文档的节点上，setOption 渲染不出来（表现为切标的白图）
+  if (chartEl !== chartRef.value) {
+    chartInstance?.dispose()
+    chartInstance = null
+    chartEl = chartRef.value
+  }
   chartInstance ??= echarts.init(chartRef.value)
   const market = payload.value?.market ?? 'A'
   // X 轴按市场固定为全交易分钟刻度（不随已有数据伸缩，缺数据处为空）
@@ -460,7 +470,10 @@ watch(symbolCode, (code) => {
   if (!code) return
   points.value = []
   payload.value = null
-  chartInstance?.clear()
+  // 彻底重置图表：points 清空触发 v-if 移除 div，旧实例已失效，直接销毁
+  chartInstance?.dispose()
+  chartInstance = null
+  chartEl = null
 
   // SSE 持久化连接：切换标的即重建连接；snapshot 事件推送全量
   startStream()
@@ -483,6 +496,7 @@ onBeforeUnmount(() => {
   stopPolling()
   chartInstance?.dispose()
   chartInstance = null
+  chartEl = null
 })
 </script>
 
