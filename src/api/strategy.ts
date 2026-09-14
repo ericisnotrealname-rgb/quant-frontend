@@ -11,6 +11,9 @@ export const strategyApi = {
   updateCase(id: number, data: Partial<CaseItem>) {
     return api.patch<CaseItem>(`/cases/${id}/`, data)
   },
+  deleteCase(id: number) {
+    return api.delete(`/cases/${id}/`)
+  },
   publishCase(id: number) {
     return api.post<CaseItem>(`/cases/${id}/publish/`)
   },
@@ -20,11 +23,14 @@ export const strategyApi = {
   suiteTopology(id: number) {
     return api.get<TopologyPayload>(`/suites/${id}/topology/`)
   },
-  createSuite(data: Partial<SuiteItem> & { case_ids?: number[] }) {
+  createSuite(data: Partial<SuiteItem> & { case_ids?: number[]; parent?: number }) {
     return api.post<SuiteItem>('/suites/', data)
   },
   updateTopology(id: number, data: { case_ids: number[]; edges: Record<string, unknown>[] }) {
     return api.post(`/suites/${id}/topology/`, data)
+  },
+  deleteSuite(id: number) {
+    return api.delete(`/suites/${id}/`)
   },
   publishSuite(id: number) {
     return api.post<SuiteItem>(`/suites/${id}/publish/`)
@@ -40,6 +46,9 @@ export const strategyApi = {
   },
   createPlan(data: Partial<PlanItem>) {
     return api.post<PlanItem>('/plans/', data)
+  },
+  deletePlan(id: number) {
+    return api.delete(`/plans/${id}/`)
   },
   publishPlan(id: number) {
     return api.post<PlanItem>(`/plans/${id}/publish/`)

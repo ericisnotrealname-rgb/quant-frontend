@@ -99,6 +99,12 @@ const router = createRouter({
       meta: { title: '分时监控', requiresAuth: true },
     },
     {
+      path: '/quick-strategy',
+      name: 'quick-strategy',
+      component: () => import('@/views/QuickStrategy.vue'),
+      meta: { title: '快速创建', requiresAuth: true },
+    },
+    {
       path: '/designer',
       name: 'designer',
       component: () => import('@/views/Designer.vue'),

@@ -37,6 +37,10 @@
             <el-icon><Connection /></el-icon>
             <template #title>Suite 管理</template>
           </el-menu-item>
+          <el-menu-item index="/quick-strategy">
+            <el-icon><MagicStick /></el-icon>
+            <template #title>快速创建</template>
+          </el-menu-item>
           <el-menu-item index="/designer">
             <el-icon><Setting /></el-icon>
             <template #title>策略设计器</template>
@@ -123,7 +127,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElAside, ElAvatar, ElButton, ElContainer, ElDropdown, ElDropdownItem, ElDropdownMenu, ElHeader, ElIcon, ElMain, ElMenu, ElMenuItem } from 'element-plus'
-import { Bell, Calendar, Connection, DataAnalysis, Document, Expand, Folder, Fold, Odometer, Setting, TrendCharts, User, VideoPlay, Wallet, Warning } from '@element-plus/icons-vue'
+import { Bell, Calendar, Connection, DataAnalysis, Document, Expand, Folder, Fold, MagicStick, Odometer, Setting, TrendCharts, User, VideoPlay, Wallet, Warning } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
