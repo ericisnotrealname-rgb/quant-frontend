@@ -556,7 +556,9 @@ function renderChart() {
     showKdj: showKdj.value,
     showRsi: showRsi.value,
   })
-  chartInstance.setOption(option)
+  // 取消勾选副图指标时，旧元素的 grid/series 会残留在图上；先 clear 再整体替换（notMerge）
+  chartInstance.clear()
+  chartInstance.setOption(option, true)
 }
 
 interface IndicatorContext {
