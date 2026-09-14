@@ -31,8 +31,9 @@
       <span class="status-item">最新：{{ latestPriceText }}</span>
       <span class="status-item" :style="{ color: latestChangeColor }">涨跌：{{ latestChangeText }}</span>
       <span class="status-item">数据点：{{ points.length }}</span>
-      <el-tag v-if="pollingActive" type="success" size="small">轮询中 {{ POLL_MS / 1000 }}s/次</el-tag>
-      <el-tag v-else type="info" size="small">轮询已暂停</el-tag>
+      <el-tag v-if="streamActive" type="success" size="small">实时推送 (SSE)</el-tag>
+      <el-tag v-else-if="pollingActive" type="warning" size="small">轮询中 {{ POLL_MS / 1000 }}s/次（降级）</el-tag>
+      <el-tag v-else type="info" size="small">推送已暂停</el-tag>
     </div>
 
     <section class="panel">
@@ -42,6 +43,19 @@
           <h2>今日分时曲线</h2>
         </div>
         <div class="legend-hint">
+          <span class="y-span-control">
+            <span class="control-label">Y轴最小振幅%</span>
+            <el-input-number
+              v-model="yMinSpanPct"
+              :min="0.1"
+              :max="20"
+              :step="0.1"
+              :precision="1"
+              size="small"
+              controls-position="right"
+              style="width: 110px"
+            />
+          </span>
           <span class="dot blue" />现价
           <span class="dot yellow" />均价
           <span class="dot red" />上涨
@@ -63,8 +77,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { echarts } from '@/utils/echarts'
 import type { EChartsType } from '@/utils/echarts'
-import { monitoringApi } from '@/api/monitoring'
-import type { IntradayPayload, IntradayPointItem } from '@/api/monitoring'
+import { monitoringApi, subscribeIntradayStream } from '@/api/monitoring'
+import type { IntradayPayload, IntradayPointItem, IntradaySessionStatus } from '@/api/monitoring'
 import { watchlistsApi } from '@/api/watchlists'
 import type { SymbolItem } from '@/types/api'
 
@@ -77,10 +91,16 @@ const points = ref<IntradayPointItem[]>([])
 const loading = ref(false)
 const error = ref('')
 const pollingActive = ref(false)
+const streamActive = ref(false)
 const chartRef = ref<HTMLElement | null>(null)
 
 let chartInstance: EChartsType | null = null
 let timer: ReturnType<typeof setInterval> | null = null
+let streamHandle: { close: () => void } | null = null
+// SSE 连续错误计数：EventSource 会自动重连；连续多次失败且未收到任何消息时降级回轮询
+let streamErrorCount = 0
+let streamHasMessage = false
+const STREAM_MAX_ERRORS = 3
 
 const SESSION_META: Record<string, { label: string; type: string }> = {
   trading: { label: '交易中', type: 'success' },
@@ -89,6 +109,55 @@ const SESSION_META: Record<string, { label: string; type: string }> = {
   closed: { label: '已收盘', type: 'info' },
 }
 const MARKET_LABELS: Record<string, string> = { A: 'A股', HK: '港股', US: '美股' }
+
+// 各市场交易时段（与后端 market_calendar 保持一致，end 为结束边界不含）
+const MARKET_SESSIONS: Record<string, Array<[string, string]>> = {
+  A: [
+    ['09:30', '11:30'],
+    ['13:00', '15:00'],
+  ],
+  HK: [
+    ['09:30', '12:00'],
+    ['13:00', '16:00'],
+  ],
+  US: [['09:30', '16:00']],
+}
+
+function _minutesOf(hhmm: string): number {
+  const [h, m] = hhmm.split(':').map(Number)
+  return h * 60 + m
+}
+
+function _labelOf(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+}
+
+/** 按市场枚举全交易分钟刻度（A=240 / HK=330 / US=390），X 轴固定不随数据变化 */
+function marketSessionMinutes(market: string): string[] {
+  const out: string[] = []
+  for (const [start, end] of MARKET_SESSIONS[market] ?? MARKET_SESSIONS.A) {
+    for (let cur = _minutesOf(start); cur < _minutesOf(end); cur += 1) {
+      out.push(_labelOf(cur))
+    }
+  }
+  return out
+}
+
+// Y 轴最小振幅（%）：以昨收为中心的最小显示范围，用户可改并保存在前端
+const Y_SPAN_STORAGE_KEY = 'monitoring.yMinSpanPct'
+const DEFAULT_Y_MIN_SPAN_PCT = 2
+
+function loadYMinSpanPct(): number {
+  const saved = Number(localStorage.getItem(Y_SPAN_STORAGE_KEY))
+  return Number.isFinite(saved) && saved >= 0.1 && saved <= 20 ? saved : DEFAULT_Y_MIN_SPAN_PCT
+}
+
+const yMinSpanPct = ref(loadYMinSpanPct())
+
+watch(yMinSpanPct, (value) => {
+  localStorage.setItem(Y_SPAN_STORAGE_KEY, String(value))
+  if (points.value.length > 0) renderChart()
+})
 
 const timezone = computed(() => payload.value?.timezone ?? '-')
 const marketLabel = computed(() => MARKET_LABELS[payload.value?.market ?? ''] ?? payload.value?.market ?? '-')
@@ -161,24 +230,51 @@ function applyPayload(data: IntradayPayload) {
   }
   points.value = [...byTs.values()].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
   renderChart()
-  schedulePolling()
+  if (!streamActive.value) schedulePolling()
 }
 
 function renderChart() {
   if (!chartRef.value) return
   chartInstance ??= echarts.init(chartRef.value)
-  const times = points.value.map((point) => point.local_time)
-  const prices = points.value.map((point) => Number(point.price))
-  const avgPrices = points.value.map((point) => {
-    const value = point.avg_price
-    return value === null || value === '' ? null : Number(value)
-  })
-  const volumes = points.value.map((point) => point.volume)
-  const changes = points.value.map((point) => Number(point.change))
+  const market = payload.value?.market ?? 'A'
+  // X 轴按市场固定为全交易分钟刻度（不随已有数据伸缩，缺数据处为空）
+  const fixedTimes = marketSessionMinutes(market)
+  const timeIndex = new Map(fixedTimes.map((label, index) => [label, index] as const))
+  const prices: Array<number | null> = new Array(fixedTimes.length).fill(null)
+  const avgPrices: Array<number | null> = new Array(fixedTimes.length).fill(null)
+  const volumes: Array<number | null> = new Array(fixedTimes.length).fill(null)
+  const changes: Array<number | null> = new Array(fixedTimes.length).fill(null)
+  const pointByTime = new Map<string, IntradayPointItem>()
+  for (const point of points.value) {
+    const index = timeIndex.get(point.local_time)
+    if (index === undefined) continue
+    prices[index] = Number(point.price)
+    avgPrices[index] = point.avg_price === null || point.avg_price === '' ? null : Number(point.avg_price)
+    volumes[index] = point.volume
+    changes[index] = Number(point.change)
+    pointByTime.set(point.local_time, point)
+  }
   const volumeBars = volumes.map((volume, index) => ({
     value: volume,
-    itemStyle: { color: changes[index] > 0 ? '#dc2626' : changes[index] < 0 ? '#16a34a' : '#94a3b8' },
+    itemStyle: { color: (changes[index] ?? 0) > 0 ? '#dc2626' : (changes[index] ?? 0) < 0 ? '#16a34a' : '#94a3b8' },
   }))
+
+  // 价格轴：以昨收为中心，最小振幅 = max(实际波动, yMinSpanPct%)
+  const preClose = Number(payload.value?.pre_close ?? 0)
+  let priceMin: number | undefined
+  let priceMax: number | undefined
+  if (preClose > 0) {
+    let deviation = 0
+    for (const value of prices) {
+      if (value !== null) deviation = Math.max(deviation, Math.abs(value - preClose))
+    }
+    const halfSpan = Math.max(deviation, (preClose * yMinSpanPct.value) / 100) * 1.05
+    priceMin = Number((preClose - halfSpan).toFixed(4))
+    priceMax = Number((preClose + halfSpan).toFixed(4))
+  }
+
+  const labelInterval = (index: number): boolean =>
+    index % 30 === 0 || index === fixedTimes.length - 1
 
   chartInstance.setOption({
     backgroundColor: 'transparent',
@@ -188,7 +284,7 @@ function renderChart() {
       formatter: (params: unknown) => {
         const list = params as unknown as Array<{ dataIndex?: number }>
         if (!Array.isArray(list) || list.length === 0) return ''
-        const point = points.value[Number(list[0].dataIndex ?? 0)]
+        const point = pointByTime.get(fixedTimes[Number(list[0].dataIndex ?? 0)])
         if (!point) return ''
         const change = Number(point.change)
         const changeColor = change > 0 ? '#dc2626' : change < 0 ? '#16a34a' : '#667085'
@@ -216,15 +312,15 @@ function renderChart() {
     xAxis: [
       {
         type: 'category',
-        data: times,
+        data: fixedTimes,
         boundaryGap: false,
-        axisLabel: { color: '#667085', interval: 'auto', rotate: 45 },
+        axisLabel: { color: '#667085', interval: labelInterval, rotate: 45 },
         axisLine: { lineStyle: { color: '#e6e8ec' } },
       },
       {
         type: 'category',
         gridIndex: 1,
-        data: times,
+        data: fixedTimes,
         boundaryGap: false,
         axisLabel: { show: false },
         axisTick: { show: false },
@@ -234,7 +330,9 @@ function renderChart() {
     yAxis: [
       {
         type: 'value',
-        scale: true,
+        min: priceMin,
+        max: priceMax,
+        scale: priceMin === undefined,
         name: '价格',
         nameTextStyle: { color: '#98a2b3' },
         axisLabel: { color: '#667085' },
@@ -294,6 +392,7 @@ function formatCompact(value: number | string): string {
 
 function schedulePolling() {
   stopPolling()
+  if (streamActive.value) return
   if (sessionStatus.value === 'trading') {
     pollingActive.value = true
     timer = setInterval(() => void refresh(true), POLL_MS)
@@ -308,6 +407,51 @@ function stopPolling() {
   pollingActive.value = false
 }
 
+// ------------------------------------------------------------------ //
+// SSE 持久化连接（snapshot → tick* → session），失败自动降级回轮询
+// ------------------------------------------------------------------ //
+
+function handleStreamError() {
+  streamErrorCount += 1
+  if (!streamHasMessage && streamErrorCount >= STREAM_MAX_ERRORS) {
+    // 连接始终未成功：降级为 HTTP 轮询
+    closeStream()
+    streamActive.value = false
+    console.error('SSE 连接连续失败，已降级为轮询模式')
+    void refresh(true)
+    schedulePolling()
+  }
+}
+
+function startStream() {
+  if (!symbolCode.value) return
+  closeStream()
+  streamErrorCount = 0
+  streamHasMessage = false
+  streamActive.value = true
+  stopPolling()
+  streamHandle = subscribeIntradayStream(symbolCode.value, {
+    onSnapshot: (data) => {
+      streamHasMessage = true
+      applyPayload(data)
+    },
+    onTick: (data) => {
+      streamHasMessage = true
+      applyPayload(data)
+    },
+    onSession: (next: IntradaySessionStatus) => {
+      if (payload.value) payload.value.session_status = next
+      renderChart()
+    },
+    onError: () => handleStreamError(),
+  })
+}
+
+function closeStream() {
+  streamHandle?.close()
+  streamHandle = null
+}
+
 function handleResize() {
   chartInstance?.resize()
 }
@@ -318,7 +462,8 @@ watch(symbolCode, (code) => {
   payload.value = null
   chartInstance?.clear()
 
-  void refresh(false)
+  // SSE 持久化连接：切换标的即重建连接；snapshot 事件推送全量
+  startStream()
 })
 
 onMounted(async () => {
@@ -334,6 +479,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
+  closeStream()
   stopPolling()
   chartInstance?.dispose()
   chartInstance = null
@@ -411,6 +557,19 @@ p {
   gap: 8px;
   color: #667085;
   font-size: 12px;
+}
+
+.y-span-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+}
+
+.control-label {
+  color: #667085;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .dot {
