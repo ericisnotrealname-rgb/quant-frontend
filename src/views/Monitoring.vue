@@ -43,6 +43,11 @@
           <h2>今日分时曲线</h2>
         </div>
         <div class="legend-hint">
+          <span class="indicator-controls">
+            <el-checkbox v-model="showMacd" size="small">MACD</el-checkbox>
+            <el-checkbox v-model="showKdj" size="small">KDJ</el-checkbox>
+            <el-checkbox v-model="showRsi" size="small">RSI</el-checkbox>
+          </span>
           <span class="y-span-control">
             <span class="control-label">Y轴最小振幅%</span>
             <el-input-number
@@ -62,7 +67,7 @@
           <span class="dot green" />下跌
         </div>
       </div>
-      <div v-if="points.length" ref="chartRef" class="chart" />
+      <div v-if="points.length" ref="chartRef" class="chart" :style="{ height: chartHeight }" />
       <el-empty
         v-else-if="!loading"
         description="暂无分时数据：交易时段内由服务进程内部更新器每分钟自动采样写入"
@@ -159,6 +164,148 @@ watch(yMinSpanPct, (value) => {
   localStorage.setItem(Y_SPAN_STORAGE_KEY, String(value))
   if (points.value.length > 0) renderChart()
 })
+
+// ------------------------------------------------------------------ //
+// 分时技术指标（MACD / KDJ / RSI）：主图下方独立子图，开关状态持久化
+// ------------------------------------------------------------------ //
+
+const INDICATOR_STORAGE_KEY = 'monitoring.indicators'
+const INDICATOR_DEFAULTS = { macd: true, kdj: false, rsi: false }
+
+function loadIndicatorFlags(): Record<string, boolean> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(INDICATOR_STORAGE_KEY) ?? '{}') as Record<string, boolean>
+    return {
+      macd: typeof saved.macd === 'boolean' ? saved.macd : INDICATOR_DEFAULTS.macd,
+      kdj: typeof saved.kdj === 'boolean' ? saved.kdj : INDICATOR_DEFAULTS.kdj,
+      rsi: typeof saved.rsi === 'boolean' ? saved.rsi : INDICATOR_DEFAULTS.rsi,
+    }
+  } catch {
+    return { ...INDICATOR_DEFAULTS }
+  }
+}
+
+const indicatorFlags = ref(loadIndicatorFlags())
+const showMacd = computed({
+  get: () => indicatorFlags.value.macd,
+  set: (value: boolean) => { indicatorFlags.value = { ...indicatorFlags.value, macd: value }; saveIndicators() },
+})
+const showKdj = computed({
+  get: () => indicatorFlags.value.kdj,
+  set: (value: boolean) => { indicatorFlags.value = { ...indicatorFlags.value, kdj: value }; saveIndicators() },
+})
+const showRsi = computed({
+  get: () => indicatorFlags.value.rsi,
+  set: (value: boolean) => { indicatorFlags.value = { ...indicatorFlags.value, rsi: value }; saveIndicators() },
+})
+
+function saveIndicators() {
+  localStorage.setItem(INDICATOR_STORAGE_KEY, JSON.stringify(indicatorFlags.value))
+  if (points.value.length > 0) void nextTick().then(renderChart)
+}
+
+/** 启用的指标数量决定图表总高度（主图+量图固定，指标子图各占一档） */
+const chartHeight = computed(() => {
+  const count = [showMacd.value, showKdj.value, showRsi.value].filter(Boolean).length
+  return `${380 + count * 150}px`
+})
+
+type Num = number | null
+
+/** EMA（指数移动平均），period>=1 */
+function ema(values: Array<number | null>, period: number): Array<number | null> {
+  const out: Num[] = new Array(values.length).fill(null)
+  const k = 2 / (period + 1)
+  let prev: number | null = null
+  for (let i = 0; i < values.length; i += 1) {
+    const value = values[i]
+    if (value === null) continue
+    prev = prev === null ? value : value * k + prev * (1 - k)
+    out[i] = prev
+  }
+  return out
+}
+
+interface MacdResult { dif: Num[]; dea: Num[]; macd: Num[] }
+
+/** MACD(12,26,9)：DIF=EMA12-EMA26，DEA=EMA(DIF,9)，MACD=(DIF-DEA)*2 */
+function computeMacd(values: Num[]): MacdResult {
+  const ema12 = ema(values, 12)
+  const ema26 = ema(values, 26)
+  const dif: Num[] = values.map((_, i) =>
+    ema12[i] !== null && ema26[i] !== null ? (ema12[i] as number) - (ema26[i] as number) : null,
+  )
+  const dea = ema(dif, 9)
+  const macd: Num[] = dif.map((value, i) =>
+    value !== null && dea[i] !== null ? ((value - (dea[i] as number)) * 2) : null,
+  )
+  return { dif, dea, macd }
+}
+
+interface KdjResult { k: Num[]; d: Num[]; j: Num[] }
+
+/** KDJ(9,3,3)：RSV=(C-Ln)/(Hn-Ln)*100，K=RSV 的 3 日平滑，D=K 的 3 日平滑，J=3K-2D */
+function computeKdj(
+  closes: Num[], highs: Num[], lows: Num[], period = 9,
+): KdjResult {
+  const k: Num[] = new Array(closes.length).fill(null)
+  const d: Num[] = new Array(closes.length).fill(null)
+  const j: Num[] = new Array(closes.length).fill(null)
+  let prevK: number | null = null
+  let prevD: number | null = null
+  for (let i = 0; i < closes.length; i += 1) {
+    const close = closes[i]
+    if (close === null) continue
+    let high = -Infinity
+    let low = Infinity
+    for (let n = Math.max(0, i - period + 1); n <= i; n += 1) {
+      const h = highs[n] ?? closes[n]
+      const l = lows[n] ?? closes[n]
+      if (h !== null && h > high) high = h
+      if (l !== null && l < low) low = l
+    }
+    if (!Number.isFinite(high) || !Number.isFinite(low)) continue
+    const rsv = high === low ? 50 : ((close - low) / (high - low)) * 100
+    prevK = prevK === null ? rsv : (rsv * 2 + prevK) / 3
+    prevD = prevD === null ? prevK : (prevK * 2 + prevD) / 3
+    k[i] = prevK
+    d[i] = prevD
+    j[i] = 3 * prevK - 2 * prevD
+  }
+  return { k, d, j }
+}
+
+/** RSI(N)：基于相邻收盘变动的 Wilder 平滑；样本不足或无波动返回 50（中性） */
+function computeRsi(closes: Num[], period = 14): Num[] {
+  const out: Num[] = new Array(closes.length).fill(null)
+  let avgGain: number | null = null
+  let avgLoss: number | null = null
+  let seen = 0
+  let prevClose: number | null = null
+  for (let i = 0; i < closes.length; i += 1) {
+    const close = closes[i]
+    if (close === null) continue
+    if (prevClose !== null) {
+      const change = close - prevClose
+      const gain = Math.max(change, 0)
+      const loss = Math.max(-change, 0)
+      seen += 1
+      if (avgGain === null || avgLoss === null) {
+        avgGain = gain
+        avgLoss = loss
+      } else {
+        avgGain = (avgGain * (period - 1) + gain) / period
+        avgLoss = (avgLoss * (period - 1) + loss) / period
+      }
+      if (seen >= period) {
+        const sum = (avgGain ?? 0) + (avgLoss ?? 0)
+        out[i] = sum === 0 ? 50 : ((avgGain ?? 0) / sum) * 100
+      }
+    }
+    prevClose = close
+  }
+  return out
+}
 
 const timezone = computed(() => payload.value?.timezone ?? '-')
 const marketLabel = computed(() => MARKET_LABELS[payload.value?.market ?? ''] ?? payload.value?.market ?? '-')
@@ -268,6 +415,14 @@ function renderChart() {
     value: volume,
     itemStyle: { color: (changes[index] ?? 0) > 0 ? '#dc2626' : (changes[index] ?? 0) < 0 ? '#16a34a' : '#94a3b8' },
   }))
+  const highs: Num[] = new Array(fixedTimes.length).fill(null)
+  const lows: Num[] = new Array(fixedTimes.length).fill(null)
+  for (const point of points.value) {
+    const index = timeIndex.get(point.local_time)
+    if (index === undefined) continue
+    highs[index] = point.high === null || point.high === '' ? null : Number(point.high)
+    lows[index] = point.low === null || point.low === '' ? null : Number(point.low)
+  }
 
   // 价格轴：以昨收为中心，最小振幅 = max(实际波动, yMinSpanPct%)
   const preClose = Number(payload.value?.pre_close ?? 0)
@@ -286,7 +441,7 @@ function renderChart() {
   const labelInterval = (index: number): boolean =>
     index % 30 === 0 || index === fixedTimes.length - 1
 
-  chartInstance.setOption({
+  const option = {
     backgroundColor: 'transparent',
     tooltip: {
       trigger: 'axis',
@@ -390,7 +545,102 @@ function renderChart() {
       { type: 'inside', xAxisIndex: [0, 1], min: 40, max: 100 },
       { type: 'slider', xAxisIndex: [0, 1], bottom: 0, height: 18 },
     ],
+  }
+  applyIndicatorLayout(option, {
+    fixedTimes,
+    labelInterval,
+    prices,
+    highs,
+    lows,
+    showMacd: showMacd.value,
+    showKdj: showKdj.value,
+    showRsi: showRsi.value,
   })
+  chartInstance.setOption(option)
+}
+
+interface IndicatorContext {
+  fixedTimes: string[]
+  labelInterval: (index: number) => boolean
+  prices: Num[]
+  highs: Num[]
+  lows: Num[]
+  showMacd: boolean
+  showKdj: boolean
+  showRsi: boolean
+}
+
+/** 在基础 option 上追加「主图下方」的指标子图：改写主/量 grid 高度，动态追加 grid/axis/series */
+function applyIndicatorLayout(option: Record<string, unknown>, ctx: IndicatorContext) {
+  const grids = option.grid as Array<Record<string, unknown>>
+  const xAxes = option.xAxis as Array<Record<string, unknown>>
+  const yAxes = option.yAxis as Array<Record<string, unknown>>
+  const series = option.series as Array<Record<string, unknown>>
+  // 重新分配纵向空间：主图 30% / 量图 10% / 指标各 11%（间隔 2%），dataZoom 常驻底部
+  grids[0] = { ...grids[0], top: 34, height: '30%' }
+  grids[1] = { ...grids[1], top: '42%', height: '10%' }
+
+  const enabled: Array<{ name: string; build: (gridIndex: number) => Record<string, unknown>[] }> = []
+  if (ctx.showMacd) {
+    const { dif, dea, macd } = computeMacd(ctx.prices)
+    enabled.push({ name: 'MACD(12,26,9)', build: (i) => [
+      {
+        name: 'MACD', type: 'bar', xAxisIndex: i, yAxisIndex: i, data: macd,
+        barWidth: '62%', tooltip: { show: false },
+        itemStyle: { color: (p: { value: number | null }) => ((p.value ?? 0) >= 0 ? '#dc2626' : '#16a34a') },
+      },
+      { name: 'DIF', type: 'line', xAxisIndex: i, yAxisIndex: i, data: dif, showSymbol: false, lineStyle: { color: '#3b82f6', width: 1.2 } },
+      { name: 'DEA', type: 'line', xAxisIndex: i, yAxisIndex: i, data: dea, showSymbol: false, lineStyle: { color: '#f59e0b', width: 1.2 } },
+    ] })
+  }
+  if (ctx.showKdj) {
+    const { k, d, j } = computeKdj(ctx.prices, ctx.highs, ctx.lows)
+    enabled.push({ name: 'KDJ(9,3,3)', build: (i) => [
+      { name: 'K', type: 'line', xAxisIndex: i, yAxisIndex: i, data: k, showSymbol: false, lineStyle: { color: '#3b82f6', width: 1.2 } },
+      { name: 'D', type: 'line', xAxisIndex: i, yAxisIndex: i, data: d, showSymbol: false, lineStyle: { color: '#f59e0b', width: 1.2 } },
+      { name: 'J', type: 'line', xAxisIndex: i, yAxisIndex: i, data: j, showSymbol: false, lineStyle: { color: '#a855f7', width: 1.2 } },
+    ] })
+  }
+  if (ctx.showRsi) {
+    const rsi = computeRsi(ctx.prices)
+    enabled.push({ name: 'RSI(14)', build: (i) => [
+      {
+        name: 'RSI', type: 'line', xAxisIndex: i, yAxisIndex: i, data: rsi,
+        showSymbol: false, lineStyle: { color: '#8b5cf6', width: 1.4 },
+        markLine: {
+          silent: true, symbol: 'none', label: { show: false },
+          lineStyle: { color: '#cbd5e1', type: 'dashed' },
+          data: [{ yAxis: 30 }, { yAxis: 70 }],
+        },
+      },
+    ] })
+  }
+  if (enabled.length === 0) return
+
+  let top = 55
+  for (const sub of enabled) {
+    const gridIndex = xAxes.length
+    grids.push({ left: 66, right: 20, top: `${top}%`, height: '11%' })
+    xAxes.push({
+      type: 'category', gridIndex, data: ctx.fixedTimes, boundaryGap: false,
+      axisLabel: { show: false }, axisTick: { show: false }, axisLine: { show: false },
+    })
+    yAxes.push({
+      type: 'value', gridIndex, name: sub.name,
+      nameTextStyle: { color: '#98a2b3', fontSize: 11 },
+      ...(sub.name.startsWith('RSI') ? { min: 0, max: 100 } : {}),
+      axisLabel: { color: '#98a2b3' }, splitNumber: 2,
+      splitLine: { lineStyle: { color: '#f1f3f7' } },
+    })
+    series.push(...sub.build(gridIndex))
+    top += 13
+  }
+  // dataZoom 联动全部 grid（含新增指标子图）
+  const allIndexes = xAxes.map((_, index) => index)
+  option.dataZoom = [
+    { type: 'inside', xAxisIndex: allIndexes, min: 40, max: 100 },
+    { type: 'slider', xAxisIndex: allIndexes, bottom: 0, height: 18 },
+  ]
 }
 
 function formatCompact(value: number | string): string {
