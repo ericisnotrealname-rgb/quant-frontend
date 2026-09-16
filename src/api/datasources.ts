@@ -1,17 +1,5 @@
 import api from './index'
 
-export interface DataSourceItem {
-  id: number
-  name: string
-  source_type: 'akshare' | 'tushare' | 'tdx' | 'yfinance'
-  endpoint: string | null
-  auth_info: Record<string, unknown>
-  priority: number
-  is_active: boolean
-  created_at: string
-  updated_at: string
-}
-
 export interface RealtimeSnapshotItem {
   symbol: {
     id: number
@@ -61,18 +49,6 @@ export interface KLineQueryItem {
 }
 
 export const datasourcesApi = {
-  sources(params?: Record<string, unknown>) {
-    return api.get<DataSourceItem[]>('/datasources/sources/', { params: { page_size: 500, ...params } })
-  },
-  createSource(data: Partial<DataSourceItem> & { auth_info?: Record<string, unknown> }) {
-    return api.post<DataSourceItem>('/datasources/sources/', data)
-  },
-  updateSource(id: number, data: Partial<DataSourceItem> & { auth_info?: Record<string, unknown> }) {
-    return api.patch<DataSourceItem>(`/datasources/sources/${id}/`, data)
-  },
-  deleteSource(id: number) {
-    return api.delete(`/datasources/sources/${id}/`)
-  },
   snapshots(params?: Record<string, unknown>) {
     return api.get<RealtimeSnapshotItem[]>('/datasources/snapshots/', { params: { page_size: 500, ...params } })
   },
