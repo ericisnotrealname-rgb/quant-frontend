@@ -4,7 +4,7 @@
       <div>
         <span class="eyebrow">EVENT TYPES</span>
         <h1>事件类型</h1>
-        <p>查看系统内置、插件和用户自定义事件类型说明。</p>
+        <p>查看系统内置、插件和用户自定义事件类型说明。用户自定义事件仅支持叠加在系统自带事件之上。</p>
       </div>
     </div>
 
@@ -13,6 +13,9 @@
         <el-table-column prop="name" label="事件类型名称" min-width="180" />
         <el-table-column prop="scope" label="作用域" width="180">
           <template #default="{ row }"><el-tag :type="scopeType(row.scope)">{{ scopeLabel(row.scope) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column prop="base_event_type" label="叠加基事件" width="180">
+          <template #default="{ row }">{{ row.base_event_type || '—' }}</template>
         </el-table-column>
         <el-table-column prop="description" label="描述" min-width="260" show-overflow-tooltip />
       </el-table>
