@@ -85,7 +85,13 @@
         </div>
         <div ref="chartRef" :style="{ height: chartHeight }" class="kline-chart" />
       </div>
-      <el-empty v-else description="请选择标的并查询 / 更新 K 线数据" :image-size="80" />
+      <el-empty
+        v-else
+        v-loading="queryLoading"
+        element-loading-text="K 线加载中..."
+        description="请选择标的并查询 / 更新 K 线数据"
+        :image-size="80"
+      />
     </el-card>
   </div>
 </template>
@@ -107,6 +113,7 @@ const klineRows = ref<KLineQueryItem[]>([])
 const snapshotLoading = ref(false)
 const logsLoading = ref(false)
 const syncLoading = ref(false)
+const queryLoading = ref(false)
 const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: EChartsType | null = null
 
@@ -131,17 +138,29 @@ let zoomStart = 60 // dataZoom 当前 start 百分比
 let zoomEnd = 100 // dataZoom 当前 end 百分比
 let zoomDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
-// 切换标的时重置增量加载状态
+// 切换标的时重置增量加载状态，并自动重新查询 K 线
 watch(
   () => syncForm.value.symbol,
-  () => {
+  async (newSymbol) => {
     klineRows.value = []
     loadedStart = ''
     loadedEnd = ''
     autoSyncedRanges.clear()
     zoomStart = 60
     zoomEnd = 100
-    chartInstance?.clear()
+    if (zoomDebounceTimer) {
+      clearTimeout(zoomDebounceTimer)
+      zoomDebounceTimer = null
+    }
+    // 图表容器在 v-if 内：klineRows 清空后旧 DOM 被移除，
+    // 必须销毁绑定在旧 DOM 上的 echarts 实例并置空，
+    // 否则后续 setOption 画在已脱离文档的旧 canvas 上，导致 K 线不显示
+    chartInstance?.dispose()
+    chartInstance = null
+
+    if (newSymbol && syncForm.value.start_date && syncForm.value.end_date) {
+      await handleQueryKline(false)
+    }
   },
 )
 
@@ -244,12 +263,16 @@ async function handleQueryKline(showMessage = true) {
   const start = syncForm.value.start_date
   const end = syncForm.value.end_date
 
+  queryLoading.value = true
   try {
     let rows = (await datasourcesApi.queryKline({ symbol, start, end })).data
     if (!isRangeCovered(rows, start, end)) {
       // 查询结果未完全覆盖查询天数时，自动拉取新数据后重查一次
       rows = await autoSyncAndQuery(symbol, start, end)
     }
+
+    // 查询期间用户已切换标的时丢弃过期结果，避免旧响应覆盖新标的图表
+    if (syncForm.value.symbol !== symbol) return
 
     loadedStart = start
     loadedEnd = end
@@ -264,6 +287,8 @@ async function handleQueryKline(showMessage = true) {
   } catch (error) {
     console.error(error)
     ElMessage.error('K 线查询失败')
+  } finally {
+    queryLoading.value = false
   }
 }
 
@@ -278,9 +303,9 @@ async function fetchForRange(fetchStart: string, fetchEnd: string) {
       // 返回数据未完全覆盖查询天数时，自动拉取新数据后重查一次
       rows = await autoSyncAndQuery(symbol, fetchStart, fetchEnd)
     }
-    if (rows.length) {
-      mergeKlineRows(rows)
-    }
+    // 请求期间用户已切换标的时丢弃过期结果，避免增量数据合并到新标的图表
+    if (!rows.length || syncForm.value.symbol !== symbol) return
+    mergeKlineRows(rows)
   } catch (error) {
     console.error(error)
   } finally {
@@ -519,6 +544,13 @@ function calculateKDJ(data: KLineQueryItem[], period = 9) {
 
 function renderKlineChart(rows: KLineQueryItem[]) {
   if (!chartRef.value) return
+
+  // 防御：切换标的时 v-if 会重建图表容器，旧实例可能仍绑定在已移除的 DOM 上，
+  // 此时 setOption 画在脱离文档的旧 canvas 上导致 K 线不显示，必须销毁重建
+  if (chartInstance && chartInstance.getDom() !== chartRef.value) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
 
   if (!chartInstance) {
     chartInstance = echarts.init(chartRef.value)
@@ -920,10 +952,8 @@ onBeforeUnmount(() => {
 onMounted(async () => {
   defaultDateRange()
   await Promise.all([loadSnapshots(), loadSyncLogs(), loadSymbolOptions()])
-  // 标的已自动选中时直接查询并绘制 K 线
-  if (syncForm.value.symbol && syncForm.value.start_date && syncForm.value.end_date) {
-    await handleQueryKline(false)
-  }
+  // loadSymbolOptions 自动选中首个标的时会触发 symbol watch 自动查询并绘制 K 线，
+  // 此处无需重复查询（避免双请求与远程同步竞态）
 })
 </script>
 
