@@ -72,15 +72,10 @@
         <el-form-item label="根 Suite ID" required>
           <el-input v-model.number="form.root_suite" />
         </el-form-item>
-        <el-form-item label="标的范围类型" required>
-          <el-select v-model="form.scopeType" style="width: 100%"><el-option label="全部标的" value="all" /><el-option label="按分组" value="groups" /><el-option label="按标的" value="symbols" /></el-select>
-        </el-form-item>
-        <el-form-item v-if="form.scopeType === 'groups'" label="分组">
-          <el-select v-model="form.groupIds" multiple filterable style="width: 100%"><el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" /></el-select>
-        </el-form-item>
-        <el-form-item v-if="form.scopeType === 'symbols'" label="标的">
-          <el-select v-model="form.symbolCodes" multiple filterable style="width: 100%"><el-option v-for="symbol in symbols" :key="symbol.id" :label="`${symbol.code} ${symbol.name}`" :value="symbol.code" /></el-select>
-        </el-form-item>
+        <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
+          标的范围已下沉到 <strong>Case</strong>：请在 Case 的 params.symbol_scope 中声明（全部标的 / 按分组 / 按标的）。
+          本 Plan 覆盖的标的 = 根 Suite 编排树内各 Case 声明的<strong>并集</strong>；树内没有任何 Case 声明时无法发布。
+        </el-alert>
         <el-form-item label="交易账户 ID">
           <el-input v-model="form.account_id" placeholder="gm 模拟账户 ID（留空则不绑定）" />
         </el-form-item>
@@ -121,9 +116,6 @@ const form = ref({
   trigger_type: "manual",
   cron_expr: "",
   root_suite: 0,
-  scopeType: "all",
-  groupIds: [] as number[],
-  symbolCodes: [] as string[],
   account_id: "",
   allocated_capital: undefined as number | undefined,
   suite_start_mode: "manual" as "auto" | "manual",
@@ -160,9 +152,6 @@ function resetForm() {
     trigger_type: "manual",
     cron_expr: "",
     root_suite: 0,
-    scopeType: "all",
-    groupIds: [],
-    symbolCodes: [],
     account_id: "",
     allocated_capital: undefined,
     suite_start_mode: "manual",
@@ -178,9 +167,6 @@ function openDialog(row?: PlanItem) {
       trigger_type: row.trigger_type,
       cron_expr: row.cron_expr || "",
       root_suite: row.root_suite,
-      scopeType: (row.symbol_scope?.type as "all" | "groups" | "symbols") || "all",
-      groupIds: Array.isArray(row.symbol_scope?.group_ids) ? row.symbol_scope.group_ids as number[] : [],
-      symbolCodes: Array.isArray(row.symbol_scope?.symbol_codes) ? row.symbol_scope.symbol_codes as string[] : [],
       account_id: row.account_id || "",
       allocated_capital: row.allocated_capital != null ? Number(row.allocated_capital) : undefined,
       suite_start_mode: row.suite_start_mode || "manual",
@@ -209,10 +195,6 @@ async function submitForm() {
     ElMessage.warning("名称和根 Suite ID 为必填项")
     return
   }
-  const symbolScope = form.value.scopeType === "all" ? { type: "all" } : form.value.scopeType === "groups" ? { type: "groups", group_ids: form.value.groupIds } : { type: "symbols", symbol_codes: form.value.symbolCodes }
-  if (form.value.scopeType === "groups" && !form.value.groupIds.length) return ElMessage.warning("请选择至少一个分组")
-  if (form.value.scopeType === "symbols" && !form.value.symbolCodes.length) return ElMessage.warning("请选择至少一个标的")
-
   saving.value = true
   try {
     const payload = {
@@ -220,7 +202,7 @@ async function submitForm() {
       trigger_type: form.value.trigger_type,
       cron_expr: form.value.cron_expr || null,
       root_suite: form.value.root_suite,
-      symbol_scope: symbolScope,
+      // 标的范围由 Case.params.symbol_scope 声明，Plan 不再下发
       account_id: form.value.account_id.trim() || "",
       allocated_capital: form.value.allocated_capital != null ? String(form.value.allocated_capital) : null,
       suite_start_mode: form.value.suite_start_mode,

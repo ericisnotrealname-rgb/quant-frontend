@@ -88,6 +88,24 @@
         </el-form-item>
         <el-form-item label="订单价格"><el-input v-model="form.orderPrice" clearable /></el-form-item>
         <el-form-item label="订单数量"><el-input-number v-model="form.orderVolume" :min="1" :precision="0" controls-position="right" /></el-form-item>
+        <el-divider content-position="left">标的范围（Plan 取编排树内各 Case 的并集）</el-divider>
+        <el-form-item label="标的范围类型">
+          <el-select v-model="form.scopeType" style="width: 100%">
+            <el-option label="全部标的" value="all" />
+            <el-option label="按分组" value="groups" />
+            <el-option label="按标的" value="symbols" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="form.scopeType === 'groups'" label="分组">
+          <el-select v-model="form.scopeGroupIds" multiple filterable style="width: 100%">
+            <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="form.scopeType === 'symbols'" label="标的">
+          <el-select v-model="form.scopeSymbolCodes" multiple filterable style="width: 100%">
+            <el-option v-for="symbol in symbols" :key="symbol.id" :label="`${symbol.code} ${symbol.name}`" :value="symbol.code" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -101,7 +119,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { strategyApi } from '@/api/strategy'
-import type { CaseItem } from '@/types/api'
+import { watchlistsApi } from '@/api/watchlists'
+import type { CaseItem, GroupItem, SymbolItem } from '@/types/api'
 
 const cases = ref<CaseItem[]>([])
 const loading = ref(false)
@@ -109,11 +128,14 @@ const saving = ref(false)
 const statusFilter = ref('')
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
+// 标的范围由 Case 声明（params.symbol_scope）；Plan 取编排树内各 Case 声明的并集
+const groups = ref<GroupItem[]>([])
+const symbols = ref<SymbolItem[]>([])
 const eventTypes = ['SYSTEM_START', 'SYSTEM_STOP', 'SUITE_INIT', 'SUITE_START', 'SUITE_COMPLETED', 'SUITE_FAILED', 'CASE_START', 'CASE_COMPLETED', 'CASE_FAILED', 'CASE_SKIPPED', 'TIMER', 'PRICE_SURGE', 'PRICE_DROP', 'VOLUME_SPIKE', 'MACRO_CPI', 'MACRO_INTEREST']
 const form = ref(createForm())
 
 function createForm() {
-  return { name: '', node_type: 'signal' as CaseItem['node_type'], triggerEvent: '', period: undefined as number | undefined, thresholdOversold: undefined as number | undefined, thresholdOverbought: undefined as number | undefined, direction: undefined as -1 | 0 | 1 | undefined, resultValue: '', orderDirection: '' as 'buy' | 'sell' | '', orderPrice: '', orderVolume: undefined as number | undefined }
+  return { name: '', node_type: 'signal' as CaseItem['node_type'], triggerEvent: '', period: undefined as number | undefined, thresholdOversold: undefined as number | undefined, thresholdOverbought: undefined as number | undefined, direction: undefined as -1 | 0 | 1 | undefined, resultValue: '', orderDirection: '' as 'buy' | 'sell' | '', orderPrice: '', orderVolume: undefined as number | undefined, scopeType: 'all' as 'all' | 'groups' | 'symbols', scopeGroupIds: [] as number[], scopeSymbolCodes: [] as string[] }
 }
 
 const filteredCases = computed(() => {
@@ -151,7 +173,8 @@ function openDialog(row?: CaseItem) {
     const params = row.params || {}
     const order = typeof params.order === 'object' && params.order ? params.order as Record<string, unknown> : {}
     const result = typeof params.result === 'object' && params.result ? params.result as Record<string, unknown> : {}
-    form.value = { ...createForm(), name: row.name, node_type: row.node_type, triggerEvent: typeof (params.trigger as Record<string, unknown> | undefined)?.event_type === 'string' ? (params.trigger as Record<string, unknown>).event_type as string : '', period: typeof params.period === 'number' ? params.period : undefined, thresholdOversold: typeof params.threshold_oversold === 'number' ? params.threshold_oversold : undefined, thresholdOverbought: typeof params.threshold_overbought === 'number' ? params.threshold_overbought : undefined, direction: params.direction === -1 || params.direction === 0 || params.direction === 1 ? params.direction : undefined, resultValue: typeof result.value === 'string' ? result.value : '', orderDirection: order.direction === 'buy' || order.direction === 'sell' ? order.direction : '', orderPrice: typeof order.price === 'string' || typeof order.price === 'number' ? String(order.price) : '', orderVolume: typeof order.volume === 'number' ? order.volume : undefined }
+    const scope = (params.symbol_scope || {}) as { type?: string; group_ids?: number[]; symbol_codes?: string[] }
+    form.value = { ...createForm(), name: row.name, node_type: row.node_type, triggerEvent: typeof (params.trigger as Record<string, unknown> | undefined)?.event_type === 'string' ? (params.trigger as Record<string, unknown>).event_type as string : '', period: typeof params.period === 'number' ? params.period : undefined, thresholdOversold: typeof params.threshold_oversold === 'number' ? params.threshold_oversold : undefined, thresholdOverbought: typeof params.threshold_overbought === 'number' ? params.threshold_overbought : undefined, direction: params.direction === -1 || params.direction === 0 || params.direction === 1 ? params.direction : undefined, resultValue: typeof result.value === 'string' ? result.value : '', orderDirection: order.direction === 'buy' || order.direction === 'sell' ? order.direction : '', orderPrice: typeof order.price === 'string' || typeof order.price === 'number' ? String(order.price) : '', orderVolume: typeof order.volume === 'number' ? order.volume : undefined, scopeType: (scope.type === 'groups' || scope.type === 'symbols') ? scope.type : 'all', scopeGroupIds: Array.isArray(scope.group_ids) ? scope.group_ids : [], scopeSymbolCodes: Array.isArray(scope.symbol_codes) ? scope.symbol_codes : [] }
   } else {
     resetForm()
   }
@@ -177,6 +200,8 @@ async function submitForm() {
     return
   }
   if (form.value.triggerEvent && !eventTypes.includes(form.value.triggerEvent)) return ElMessage.warning('请选择有效的触发事件')
+  if (form.value.scopeType === 'groups' && !form.value.scopeGroupIds.length) return ElMessage.warning('请选择至少一个分组')
+  if (form.value.scopeType === 'symbols' && !form.value.scopeSymbolCodes.length) return ElMessage.warning('请选择至少一个标的')
 
   saving.value = true
   try {
@@ -191,6 +216,12 @@ async function submitForm() {
         ...(form.value.direction !== undefined ? { direction: form.value.direction } : {}),
         ...(form.value.resultValue ? { result: { value: form.value.resultValue } } : {}),
         ...(form.value.orderDirection ? { order: { direction: form.value.orderDirection, price: form.value.orderPrice, volume: form.value.orderVolume } } : {}),
+        // 标的范围：结构与后端 validate_symbol_scope 契约一致
+        ...(form.value.scopeType === 'all'
+          ? { symbol_scope: { type: 'all' } }
+          : form.value.scopeType === 'groups'
+            ? { symbol_scope: { type: 'groups', group_ids: form.value.scopeGroupIds } }
+            : { symbol_scope: { type: 'symbols', symbol_codes: form.value.scopeSymbolCodes } }),
       },
     }
     if (editingId.value) {
@@ -236,7 +267,15 @@ async function remove(id: number) {
   }
 }
 
-onMounted(loadData)
+onMounted(async () => {
+  await loadData()
+  const [groupResponse, symbolResponse] = await Promise.all([
+    watchlistsApi.groups(),
+    watchlistsApi.symbols({ limit: 500 }),
+  ])
+  groups.value = groupResponse.data
+  symbols.value = symbolResponse.data
+})
 </script>
 
 <style scoped>

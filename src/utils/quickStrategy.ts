@@ -225,7 +225,7 @@ export interface PlanBlueprint {
   trigger_type: PlanItem['trigger_type']
   cron_expr: string | null
   event_type: string | null
-  symbol_scope: Record<string, unknown>
+  /** 标的范围已下沉到 Case.params.symbol_scope，Plan 不再持有该字段 */
   exec_mode: PlanItem['exec_mode']
   retry_policy: Record<string, unknown>
   account_id?: string
@@ -321,12 +321,18 @@ export function buildBlueprint(
         ? { type: 'groups', group_ids: runtime.groupIds }
         : { type: 'symbols', symbol_codes: runtime.symbolCodes }
 
+  // 标的范围下沉到 Case：每个 Case 的 params 携带 symbol_scope，
+  // Plan 的标的集合 = 编排树内各 Case 声明的并集
+  // （后端 publish_plan 会校验树内至少有一个已发布 Case 声明了标的）。
+  for (const item of cases) {
+    item.params = { ...item.params, symbol_scope: symbolScope }
+  }
+
   const plan: PlanBlueprint = {
     name: suiteName(runtime.namePrefix, ''),
     trigger_type: runtime.triggerType,
     cron_expr: runtime.triggerType === 'time' ? cronForSchedule(runtime.time, runtime.weekdays) : null,
     event_type: runtime.triggerType === 'event' ? runtime.eventType : null,
-    symbol_scope: symbolScope,
     exec_mode: runtime.execMode,
     retry_policy: { max_retries: runtime.maxRetries, delay_seconds: runtime.delaySeconds },
     suite_start_mode: runtime.suiteStartMode,
@@ -476,7 +482,6 @@ export async function quickCreateStrategy(bp: QuickBlueprint): Promise<QuickCrea
       trigger_type: bp.plan.trigger_type,
       cron_expr: bp.plan.cron_expr,
       event_type: bp.plan.event_type,
-      symbol_scope: bp.plan.symbol_scope,
       exec_mode: bp.plan.exec_mode,
       retry_policy: bp.plan.retry_policy,
       suite_start_mode: bp.plan.suite_start_mode,

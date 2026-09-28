@@ -369,11 +369,16 @@ const triggerLabel = computed(() => {
   if (plan.trigger_type === 'time') return `定时 ${runtime.value.time}`
   return `事件 ${plan.event_type || ''}`
 })
+// 标的范围由 Case 声明（blueprint.cases[*].params.symbol_scope），从首个 Case 读取用于预览
 const scopeLabel = computed(() => {
-  const scope = blueprint.value.plan.symbol_scope as { type?: string }
+  const scope = (blueprint.value.cases[0]?.params?.symbol_scope ?? { type: 'all' }) as {
+    type?: string
+    group_ids?: number[]
+    symbol_codes?: string[]
+  }
   if (scope.type === 'all') return '全市场'
-  if (scope.type === 'groups') return `分组 ×${(blueprint.value.plan.symbol_scope as { group_ids?: number[] }).group_ids?.length ?? 0}`
-  return `标的 ×${(blueprint.value.plan.symbol_scope as { symbol_codes?: string[] }).symbol_codes?.length ?? 0}`
+  if (scope.type === 'groups') return `分组 ×${scope.group_ids?.length ?? 0}`
+  return `标的 ×${scope.symbol_codes?.length ?? 0}`
 })
 const execModeLabel = computed(() => {
   const labels: Record<string, string> = { serial: '串行', parallel: '并行', fail_stop: '失败停止' }
