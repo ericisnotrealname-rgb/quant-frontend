@@ -239,3 +239,103 @@ export interface AlertStatistics {
   }
   by_type: { alert_type: AlertType; count: number }[]
 }
+
+// ---------------------------------------------------------------------------
+// N-06 运行总览（Dashboard）
+// 统计口径由后端在 DB 侧聚合：比率型指标受 window_days 限制，存量/健康度取全表事实。
+// 金额一律以字符串返回（Decimal 序列化，不做浮点转换）。
+// ---------------------------------------------------------------------------
+
+export interface DashboardExecution {
+  window_total: number
+  by_status: Record<string, number>
+  settled_total: number
+  /** 分母为 0 时后端返回 null（表示「无终结样本」，而非 0%） */
+  success_rate: number | null
+  failure_rate: number | null
+  avg_duration_ms: number | null
+  /** 全表事实，不受 window_days 限制 */
+  active_runs: number
+  running_runs: number
+}
+
+export interface DashboardIntents {
+  pending: number
+  /** 超过有效期、下次调度器启动会被收口为 PENDING_EXPIRED 的条数 */
+  expired_candidates: number
+  max_age_seconds: number
+}
+
+export interface DashboardOrders {
+  window_total: number
+  by_status: Record<string, number>
+  by_direction: Record<string, number>
+  notional_total: string | null
+  notional_direction: Record<string, string>
+  /** 超时未确认（可能已提交券商未回写），需人工对账 */
+  unconfirmed: number
+  unconfirmed_after_seconds: number
+}
+
+export interface DashboardFunds {
+  configured: boolean
+  total_capital?: string
+  allocated_capital?: string
+  available_capital?: string
+  source?: string
+  capital_basis?: string
+  synced_at?: string | null
+  is_stale?: boolean
+}
+
+export interface DashboardAlerts {
+  /** 全表未处理 */
+  open: number
+  open_by_severity: Record<string, number>
+  window_total: number
+  window_by_type: Record<string, number>
+  latest_at: string | null
+}
+
+export interface DashboardConfig {
+  plans_published: number
+  plans_by_run_status: Record<string, number>
+  suites_published: number
+  cases_published: number
+}
+
+export interface DashboardFreshness {
+  intraday_last_at: string | null
+  intraday_points: number
+  symbols: number
+  groups: number
+}
+
+export interface DashboardOverview {
+  generated_at: string
+  window_days: number
+  window_start: string
+  timezone: string
+  execution: DashboardExecution
+  intents: DashboardIntents
+  orders: DashboardOrders
+  funds: DashboardFunds
+  alerts: DashboardAlerts
+  config: DashboardConfig
+  data_freshness: DashboardFreshness
+}
+
+export interface DashboardTrendPoint {
+  date: string
+  total: number
+  completed: number
+  failed: number
+  stopped: number
+  settled: number
+  success_rate: number | null
+}
+
+export interface DashboardTrend {
+  days: number
+  series: DashboardTrendPoint[]
+}
