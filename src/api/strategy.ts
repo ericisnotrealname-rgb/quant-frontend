@@ -47,6 +47,10 @@ export const strategyApi = {
   createPlan(data: Partial<PlanItem>) {
     return api.post<PlanItem>('/plans/', data)
   },
+  /** 编辑已有 Plan 必须走 PATCH；误用 createPlan 会新建一条而不是更新 */
+  updatePlan(id: number, data: Partial<PlanItem>) {
+    return api.patch<PlanItem>(`/plans/${id}/`, data)
+  },
   deletePlan(id: number) {
     return api.delete(`/plans/${id}/`)
   },

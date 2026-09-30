@@ -155,6 +155,8 @@ export interface SuiteItem {
   allocated_capital?: string | null
 }
 
+export type PlanPositionMode = 'both' | 'long_only' | 'short_only' | 'flat'
+
 export interface PlanItem {
   id: number
   name: string
@@ -172,6 +174,17 @@ export interface PlanItem {
   run_status: 'new' | 'running' | 'done' | 'interrupt'
   suite_start_mode: 'auto' | 'manual'
   version: number
+  // ---- Plan 级风控限额（F1）----
+  // 语义：null = 不限制（不是 0）。金额以字符串返回（Decimal 序列化，不做浮点转换）。
+  risk_position_mode?: PlanPositionMode
+  risk_max_order_volume?: number | null
+  risk_max_order_value?: string | null
+  risk_max_daily_value?: string | null
+  risk_max_account_value?: string | null
+  risk_max_position_value?: string | null
+  risk_max_position_volume?: number | null
+  /** 交易时段窗口，形如 [[9,30,11,30],[13,0,15,0]]；null = 用默认 A 股时段 */
+  risk_allowed_sessions?: number[][] | null
 }
 
 export interface Paginated<T> {

@@ -25,6 +25,12 @@
         <el-table-column prop="available_capital" label="空闲资金" width="120">
           <template #default="{ row }">{{ row.available_capital ?? "—" }}</template>
         </el-table-column>
+        <el-table-column label="风控限额" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-tag v-if="riskSummary(row) === '未设限'" type="info" size="small" effect="plain">未设限</el-tag>
+            <span v-else>{{ riskSummary(row) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="suite_start_mode" label="启动模式" width="100">
           <template #default="{ row }">
             <el-tag :type="row.suite_start_mode === 'auto' ? 'success' : 'info'" size="small">
@@ -88,6 +94,54 @@
             <el-radio value="auto">Plan 启动时自动启动</el-radio>
           </el-radio-group>
         </el-form-item>
+
+        <el-divider content-position="left">风控限额（留空 = 不限制）</el-divider>
+        <el-alert
+          type="info" :closable="false" show-icon class="risk-hint"
+          title="限额随本 Plan 生效：修改后调度器热加载即生效，无需重启；时段按市场时区判定。"
+        />
+        <el-form-item label="持仓方向">
+          <el-select v-model="form.risk_position_mode" style="width: 100%">
+            <el-option label="双向（both）" value="both" />
+            <el-option label="仅做多（long_only）" value="long_only" />
+            <el-option label="仅做空（short_only）" value="short_only" />
+            <el-option label="不开仓（flat）" value="flat" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="单笔数量上限">
+          <el-input-number v-model="form.risk_max_order_volume" :min="1" :controls="false" style="width: 100%" placeholder="留空 = 不限制" />
+        </el-form-item>
+        <el-form-item label="单笔金额上限">
+          <el-input-number v-model="form.risk_max_order_value" :min="0.01" :precision="2" :controls="false" style="width: 100%" placeholder="留空 = 不限制" />
+        </el-form-item>
+        <el-form-item label="每日累计金额">
+          <el-input-number v-model="form.risk_max_daily_value" :min="0.01" :precision="2" :controls="false" style="width: 100%" placeholder="按当日已挂用金额（price × volume）累计；留空 = 不限制" />
+        </el-form-item>
+        <el-form-item label="账户可用资金">
+          <el-input-number v-model="form.risk_max_account_value" :min="0.01" :precision="2" :controls="false" style="width: 100%" placeholder="下单前校验账户可用资金；需接账户快照来源" />
+        </el-form-item>
+        <el-form-item label="总仓位金额">
+          <el-input-number v-model="form.risk_max_position_value" :min="0.01" :precision="2" :controls="false" style="width: 100%" placeholder="留空 = 不限制" />
+        </el-form-item>
+        <el-form-item label="总仓位数量">
+          <el-input-number v-model="form.risk_max_position_volume" :min="1" :controls="false" style="width: 100%" placeholder="留空 = 不限制" />
+        </el-form-item>
+        <el-form-item label="自定义交易时段">
+          <el-switch v-model="form.custom_sessions" />
+          <span class="risk-hint-inline">关闭时使用默认 A 股时段（09:30-11:30 / 13:00-15:00）</span>
+        </el-form-item>
+        <template v-if="form.custom_sessions">
+          <el-form-item label="时段一">
+            <el-time-picker v-model="form.session_1.start" value-format="HH:mm" format="HH:mm" style="width: 44%" placeholder="开始" />
+            <span class="risk-hint-inline">至</span>
+            <el-time-picker v-model="form.session_1.end" value-format="HH:mm" format="HH:mm" style="width: 44%" placeholder="结束" />
+          </el-form-item>
+          <el-form-item label="时段二">
+            <el-time-picker v-model="form.session_2.start" value-format="HH:mm" format="HH:mm" style="width: 44%" placeholder="开始" />
+            <span class="risk-hint-inline">至</span>
+            <el-time-picker v-model="form.session_2.end" value-format="HH:mm" format="HH:mm" style="width: 44%" placeholder="结束" />
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -102,7 +156,10 @@ import { ref, onMounted } from "vue"
 import { ElMessage } from "element-plus"
 import { strategyApi } from "@/api/strategy"
 import { watchlistsApi } from "@/api/watchlists"
-import type { PlanItem, GroupItem, SymbolItem } from "@/types/api"
+import type { PlanItem, PlanPositionMode, GroupItem, SymbolItem } from "@/types/api"
+
+/** 交易时段窗口（表单用 HH:mm 展示，后端存扁平 [起时,起分,止时,止分]） */
+type TimeRange = { start: string; end: string }
 
 const plans = ref<PlanItem[]>([])
 const groups = ref<GroupItem[]>([])
@@ -111,15 +168,103 @@ const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
-const form = ref({
-  name: "",
-  trigger_type: "manual",
-  cron_expr: "",
-  root_suite: 0,
-  account_id: "",
-  allocated_capital: undefined as number | undefined,
-  suite_start_mode: "manual" as "auto" | "manual",
-})
+/** 新建/重置时的表单默认值：所有风控限额留空 = 不限制。 */
+function defaultForm() {
+  return {
+    name: "",
+    trigger_type: "manual" as "time" | "event" | "manual",
+    cron_expr: "",
+    root_suite: 0,
+    account_id: "",
+    allocated_capital: undefined as number | undefined,
+    suite_start_mode: "manual" as "auto" | "manual",
+    // ---- Plan 级风控限额（F1）----
+    // 语义与后端一致：留空 / null = **不限制**（不是 0）；限额会随 PlanRegistry 热加载。
+    risk_position_mode: "both" as PlanPositionMode,
+    risk_max_order_volume: undefined as number | undefined,
+    risk_max_order_value: undefined as number | undefined,
+    risk_max_daily_value: undefined as number | undefined,
+    risk_max_account_value: undefined as number | undefined,
+    risk_max_position_value: undefined as number | undefined,
+    risk_max_position_volume: undefined as number | undefined,
+    custom_sessions: false,
+    session_1: { start: "09:30", end: "11:30" } as TimeRange,
+    session_2: { start: "13:00", end: "15:00" } as TimeRange,
+  }
+}
+
+const form = ref(defaultForm())
+
+function toMinutes(value: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || "").trim())
+  if (!match) return null
+  const hours = Number(match[1])
+  const minutes = Number(match[2])
+  if (hours > 23 || minutes > 59) return null
+  return hours * 60 + minutes
+}
+
+function toClock(total: number): string {
+  const hours = String(Math.floor(total / 60)).padStart(2, "0")
+  const minutes = String(total % 60).padStart(2, "0")
+  return `${hours}:${minutes}`
+}
+
+/** 后端扁平形式 ``[起时, 起分, 止时, 止分]`` → 表单的 ``HH:mm`` 对 */
+function sessionToRange(item: number[]): TimeRange | null {
+  if (!Array.isArray(item) || item.length < 4) return null
+  return { start: toClock(item[0] * 60 + item[1]), end: toClock(item[2] * 60 + item[3]) }
+}
+
+/** 表单 ``HH:mm`` 对 → 后端扁平形式；非法或起始不早于结束时返回 null */
+function rangeToSession(range: TimeRange): number[] | null {
+  const start = toMinutes(range.start)
+  const end = toMinutes(range.end)
+  if (start === null || end === null || start >= end) return null
+  return [Math.floor(start / 60), start % 60, Math.floor(end / 60), end % 60]
+}
+
+function buildSessions(): { sessions: number[][] | null; error: string } {
+  if (!form.value.custom_sessions) return { sessions: null, error: "" }
+  const ranges = [form.value.session_1, form.value.session_2]
+  const out: number[][] = []
+  for (let i = 0; i < ranges.length; i += 1) {
+    const item = rangeToSession(ranges[i])
+    if (!item) {
+      return { sessions: null, error: `第 ${i + 1} 个交易时段无效：需为 HH:mm 且起始早于结束` }
+    }
+    out.push(item)
+  }
+  return { sessions: out, error: "" }
+}
+
+function positionModeLabel(value: string): string {
+  const map: Record<string, string> = {
+    both: "双向",
+    long_only: "仅做多",
+    short_only: "仅做空",
+    flat: "不开仓",
+  }
+  return map[value] || value
+}
+
+/** 列表页的风控摘要（未配置任何限额时提示"未设限"）。 */
+function riskSummary(row: PlanItem): string {
+  const parts: string[] = []
+  if (row.risk_position_mode && row.risk_position_mode !== "both") {
+    parts.push(positionModeLabel(row.risk_position_mode))
+  }
+  if (row.risk_max_order_value) parts.push(`单笔≤${row.risk_max_order_value}`)
+  if (row.risk_max_order_volume) parts.push(`单笔量≤${row.risk_max_order_volume}`)
+  if (row.risk_max_daily_value) parts.push(`每日≤${row.risk_max_daily_value}`)
+  if (row.risk_max_account_value) parts.push(`账户可用≤${row.risk_max_account_value}`)
+  if (row.risk_max_position_value) parts.push(`总仓位≤${row.risk_max_position_value}`)
+  if (row.risk_max_position_volume) parts.push(`总仓位量≤${row.risk_max_position_volume}`)
+  if (row.risk_allowed_sessions && row.risk_allowed_sessions.length) {
+    parts.push(`自定义时段×${row.risk_allowed_sessions.length}`)
+  }
+  return parts.length ? parts.join(" / ") : "未设限"
+}
 
 function triggerLabel(value: string): string {
   const map: Record<string, string> = { time: "时间驱动", event: "事件驱动", manual: "手动触发" }
@@ -147,22 +292,21 @@ function runStatusLabel(value: string): string {
 }
 
 function resetForm() {
-  form.value = {
-    name: "",
-    trigger_type: "manual",
-    cron_expr: "",
-    root_suite: 0,
-    account_id: "",
-    allocated_capital: undefined,
-    suite_start_mode: "manual",
-  }
+  form.value = defaultForm()
   editingId.value = null
+}
+
+/** 金额字符串 → 数字（留空 = 不限制 → undefined） */
+function toAmount(value?: string | null): number | undefined {
+  return value == null || value === "" ? undefined : Number(value)
 }
 
 function openDialog(row?: PlanItem) {
   if (row) {
     editingId.value = row.id
+    const sessions = row.risk_allowed_sessions || []
     form.value = {
+      ...defaultForm(),
       name: row.name,
       trigger_type: row.trigger_type,
       cron_expr: row.cron_expr || "",
@@ -170,6 +314,16 @@ function openDialog(row?: PlanItem) {
       account_id: row.account_id || "",
       allocated_capital: row.allocated_capital != null ? Number(row.allocated_capital) : undefined,
       suite_start_mode: row.suite_start_mode || "manual",
+      risk_position_mode: row.risk_position_mode || "both",
+      risk_max_order_volume: row.risk_max_order_volume ?? undefined,
+      risk_max_order_value: toAmount(row.risk_max_order_value),
+      risk_max_daily_value: toAmount(row.risk_max_daily_value),
+      risk_max_account_value: toAmount(row.risk_max_account_value),
+      risk_max_position_value: toAmount(row.risk_max_position_value),
+      risk_max_position_volume: row.risk_max_position_volume ?? undefined,
+      custom_sessions: sessions.length > 0,
+      session_1: (sessions[0] ? sessionToRange(sessions[0]) : null) || { start: "09:30", end: "11:30" },
+      session_2: (sessions[1] ? sessionToRange(sessions[1]) : null) || { start: "13:00", end: "15:00" },
     }
   } else {
     resetForm()
@@ -195,6 +349,35 @@ async function submitForm() {
     ElMessage.warning("名称和根 Suite ID 为必填项")
     return
   }
+  // 时段窗口校验（与后端同契约：HH:mm、起始早于结束）
+  const { sessions, error: sessionError } = buildSessions()
+  if (sessionError) {
+    ElMessage.warning(sessionError)
+    return
+  }
+  // 后端要求限额 > 0（0 会被 400 拒绝），留空才表示"不限制"
+  const amountFields: [string, number | undefined][] = [
+    ["单笔金额上限", form.value.risk_max_order_value],
+    ["每日累计金额上限", form.value.risk_max_daily_value],
+    ["账户可用资金上限", form.value.risk_max_account_value],
+    ["总仓位金额上限", form.value.risk_max_position_value],
+  ]
+  for (const [label, value] of amountFields) {
+    if (value != null && value <= 0) {
+      ElMessage.warning(`${label} 必须大于 0（留空表示不限制）`)
+      return
+    }
+  }
+  const volumeFields: [string, number | undefined][] = [
+    ["单笔数量上限", form.value.risk_max_order_volume],
+    ["总仓位数量上限", form.value.risk_max_position_volume],
+  ]
+  for (const [label, value] of volumeFields) {
+    if (value != null && value <= 0) {
+      ElMessage.warning(`${label} 必须大于 0（留空表示不限制）`)
+      return
+    }
+  }
   saving.value = true
   try {
     const payload = {
@@ -206,9 +389,19 @@ async function submitForm() {
       account_id: form.value.account_id.trim() || "",
       allocated_capital: form.value.allocated_capital != null ? String(form.value.allocated_capital) : null,
       suite_start_mode: form.value.suite_start_mode,
+      // ---- Plan 级风控限额（F1）----
+      risk_position_mode: form.value.risk_position_mode,
+      risk_max_order_volume: form.value.risk_max_order_volume ?? null,
+      risk_max_order_value: form.value.risk_max_order_value != null ? String(form.value.risk_max_order_value) : null,
+      risk_max_daily_value: form.value.risk_max_daily_value != null ? String(form.value.risk_max_daily_value) : null,
+      risk_max_account_value: form.value.risk_max_account_value != null ? String(form.value.risk_max_account_value) : null,
+      risk_max_position_value: form.value.risk_max_position_value != null ? String(form.value.risk_max_position_value) : null,
+      risk_max_position_volume: form.value.risk_max_position_volume ?? null,
+      risk_allowed_sessions: sessions,
     }
     if (editingId.value) {
-      await strategyApi.createPlan(payload as unknown as PlanItem)
+      // 编辑必须走 PATCH：此前误用 createPlan（POST）会新建一条 Plan
+      await strategyApi.updatePlan(editingId.value, payload as unknown as PlanItem)
       ElMessage.success("Plan 已更新")
     } else {
       await strategyApi.createPlan(payload as unknown as PlanItem)
@@ -280,5 +473,7 @@ onMounted(async () => { await loadData(); const [groupResponse, symbolResponse] 
 .eyebrow { color: #d97706; font-size: 11px; font-weight: 700; letter-spacing: 1.8px; }
 h1 { margin: 6px 0; color: #172033; font-size: 36px; }
 p { color: #667085; }
+.risk-hint { margin-bottom: 14px; }
+.risk-hint-inline { margin-left: 8px; color: #98a2b3; font-size: 12px; }
 </style>
 
