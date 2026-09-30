@@ -55,6 +55,17 @@ export interface RuntimeForm {
   accountId: string
   allocatedCapital: string
   suiteStartMode: 'auto' | 'manual'
+  // ---- Plan 级风控限额（F1，可选；留空 = 不限制）----
+  // 用 number 承载以便直接绑定 el-input-number（:min 兜底 + 精度），
+  // 提交时金额转字符串、保持 Decimal 精度。
+  riskLimitsEnabled: boolean
+  riskPositionMode: PlanItem['risk_position_mode'] | 'both'
+  riskMaxOrderVolume: number | undefined
+  riskMaxOrderValue: number | undefined
+  riskMaxDailyValue: number | undefined
+  riskMaxAccountValue: number | undefined
+  riskMaxPositionValue: number | undefined
+  riskMaxPositionVolume: number | undefined
 }
 
 export interface TemplateMeta {
@@ -193,6 +204,27 @@ export function validateRuntimeForm(form: RuntimeForm): string | null {
   if (form.triggerType === 'event' && !form.eventType) return '请选择触发事件'
   if (form.maxRetries < 0 || !Number.isInteger(form.maxRetries)) return '重试次数必须是不小于 0 的整数'
   if (form.delaySeconds < 0 || !Number.isInteger(form.delaySeconds)) return '重试延迟必须是不小于 0 的整数'
+  // 风控限额：与后端同契约（金额/数量必须 > 0；留空表示不限制）
+  if (form.riskLimitsEnabled) {
+    const amountLimits: [string, number | undefined][] = [
+      ['单笔金额上限', form.riskMaxOrderValue],
+      ['每日累计金额上限', form.riskMaxDailyValue],
+      ['账户可用资金上限', form.riskMaxAccountValue],
+      ['总仓位金额上限', form.riskMaxPositionValue],
+    ]
+    for (const [label, value] of amountLimits) {
+      if (value == null) continue
+      if (!Number.isFinite(value) || value <= 0) return `${label}必须大于 0（留空表示不限制）`
+    }
+    const volumeLimits: [string, number | undefined][] = [
+      ['单笔数量上限', form.riskMaxOrderVolume],
+      ['总仓位数量上限', form.riskMaxPositionVolume],
+    ]
+    for (const [label, value] of volumeLimits) {
+      if (value == null) continue
+      if (!Number.isInteger(value) || value <= 0) return `${label}必须是大于 0 的整数（留空表示不限制）`
+    }
+  }
   return null
 }
 
@@ -231,6 +263,15 @@ export interface PlanBlueprint {
   account_id?: string
   allocated_capital?: string
   suite_start_mode: PlanItem['suite_start_mode']
+  // ---- Plan 级风控限额（F1）----
+  // 未设置（undefined）表示"不限制"，创建时不会下发该字段。
+  risk_position_mode?: PlanItem['risk_position_mode']
+  risk_max_order_volume?: number
+  risk_max_order_value?: string
+  risk_max_daily_value?: string
+  risk_max_account_value?: string
+  risk_max_position_value?: string
+  risk_max_position_volume?: number
 }
 
 export interface QuickBlueprint {
@@ -242,6 +283,49 @@ export interface QuickBlueprint {
 
 function suiteName(prefix: string, extra: string): string {
   return `${prefix.trim() || '快速策略'}${extra}`
+}
+
+/** 限额 → 正整数；留空或非法返回 null（非法值已由 ``validateRuntimeForm`` 拦下）。 */
+function toPositiveInt(value?: number | null): number | null {
+  if (value == null) return null
+  return Number.isInteger(value) && value > 0 ? value : null
+}
+
+/** 限额 → 正金额字符串；留空或非法返回 null（金额以字符串下发，避免浮点误差）。 */
+function toPositiveAmount(value?: number | null): string | null {
+  if (value == null) return null
+  return Number.isFinite(value) && value > 0 ? String(value) : null
+}
+
+/** 把向导里的限额输入映射进 Plan 蓝图（留空 = 不限制，不写入该字段）。 */
+function applyRiskLimits(plan: PlanBlueprint, runtime: RuntimeForm): void {
+  if (!runtime.riskLimitsEnabled) return
+  if (runtime.riskPositionMode) plan.risk_position_mode = runtime.riskPositionMode
+  const orderVolume = toPositiveInt(runtime.riskMaxOrderVolume)
+  if (orderVolume != null) plan.risk_max_order_volume = orderVolume
+  const orderValue = toPositiveAmount(runtime.riskMaxOrderValue)
+  if (orderValue) plan.risk_max_order_value = orderValue
+  const dailyValue = toPositiveAmount(runtime.riskMaxDailyValue)
+  if (dailyValue) plan.risk_max_daily_value = dailyValue
+  const accountValue = toPositiveAmount(runtime.riskMaxAccountValue)
+  if (accountValue) plan.risk_max_account_value = accountValue
+  const positionValue = toPositiveAmount(runtime.riskMaxPositionValue)
+  if (positionValue) plan.risk_max_position_value = positionValue
+  const positionVolume = toPositiveInt(runtime.riskMaxPositionVolume)
+  if (positionVolume != null) plan.risk_max_position_volume = positionVolume
+}
+
+/** 蓝图中已声明的限额 → Plan 创建载荷（未设置的不下发，语义等价于"不限制"）。 */
+function planRiskPayload(plan: PlanBlueprint): Partial<PlanItem> {
+  const payload: Partial<PlanItem> = {}
+  if (plan.risk_position_mode) payload.risk_position_mode = plan.risk_position_mode
+  if (plan.risk_max_order_volume != null) payload.risk_max_order_volume = plan.risk_max_order_volume
+  if (plan.risk_max_order_value) payload.risk_max_order_value = plan.risk_max_order_value
+  if (plan.risk_max_daily_value) payload.risk_max_daily_value = plan.risk_max_daily_value
+  if (plan.risk_max_account_value) payload.risk_max_account_value = plan.risk_max_account_value
+  if (plan.risk_max_position_value) payload.risk_max_position_value = plan.risk_max_position_value
+  if (plan.risk_max_position_volume != null) payload.risk_max_position_volume = plan.risk_max_position_volume
+  return payload
 }
 
 export function buildBlueprint(
@@ -341,6 +425,7 @@ export function buildBlueprint(
     plan.account_id = runtime.accountId.trim()
     plan.allocated_capital = runtime.allocatedCapital.trim()
   }
+  applyRiskLimits(plan, runtime)
 
   return { cases, suites, edges, plan }
 }
@@ -487,6 +572,8 @@ export async function quickCreateStrategy(bp: QuickBlueprint): Promise<QuickCrea
       suite_start_mode: bp.plan.suite_start_mode,
       account_id: bp.plan.account_id || '',
       allocated_capital: bp.plan.allocated_capital || null,
+      // Plan 级风控限额（F1）：未设置的不下发，等价于"不限制"
+      ...planRiskPayload(bp.plan),
     })
     plan = created.data
     partial.planId = plan.id

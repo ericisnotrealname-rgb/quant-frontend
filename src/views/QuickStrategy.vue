@@ -157,6 +157,27 @@
 
           <el-form-item label="资金账户"><el-input v-model="runtime.accountId" placeholder="可选：gm 模拟账户 ID" /></el-form-item>
           <el-form-item label="占用资金"><el-input v-model="runtime.allocatedCapital" placeholder="可选：账户级资金校验用" /></el-form-item>
+
+          <el-form-item label="风控限额">
+            <el-switch v-model="runtime.riskLimitsEnabled" active-text="启用" inactive-text="不限额" />
+            <span class="hint">{{ runtime.riskLimitsEnabled ? '留空的项表示该维度不限制' : '默认不限额；启用后可在本向导设定单策略上限' }}</span>
+          </el-form-item>
+          <template v-if="runtime.riskLimitsEnabled">
+            <el-form-item label="持仓方向">
+              <el-select v-model="runtime.riskPositionMode" style="width: 100%">
+                <el-option label="双向（both）" value="both" />
+                <el-option label="仅做多（long_only）" value="long_only" />
+                <el-option label="仅做空（short_only）" value="short_only" />
+                <el-option label="不开仓（flat）" value="flat" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="单笔数量上限"><el-input-number v-model="runtime.riskMaxOrderVolume" :min="1" :controls="false" style="width: 100%" placeholder="留空 = 不限制" /></el-form-item>
+            <el-form-item label="单笔金额上限"><el-input-number v-model="runtime.riskMaxOrderValue" :min="0.01" :precision="2" :controls="false" style="width: 100%" placeholder="留空 = 不限制" /></el-form-item>
+            <el-form-item label="每日累计金额"><el-input-number v-model="runtime.riskMaxDailyValue" :min="0.01" :precision="2" :controls="false" style="width: 100%" placeholder="按当日已挂用金额累计" /></el-form-item>
+            <el-form-item label="账户可用资金"><el-input-number v-model="runtime.riskMaxAccountValue" :min="0.01" :precision="2" :controls="false" style="width: 100%" placeholder="需填资金账户" /></el-form-item>
+            <el-form-item label="总仓位金额"><el-input-number v-model="runtime.riskMaxPositionValue" :min="0.01" :precision="2" :controls="false" style="width: 100%" placeholder="留空 = 不限制" /></el-form-item>
+            <el-form-item label="总仓位数量"><el-input-number v-model="runtime.riskMaxPositionVolume" :min="1" :controls="false" style="width: 100%" placeholder="留空 = 不限制" /></el-form-item>
+          </template>
         </el-form>
       </section>
     </div>
@@ -187,6 +208,7 @@
           <el-tag size="small">{{ triggerLabel }}</el-tag>
           <el-tag size="small" type="success">{{ scopeLabel }}</el-tag>
           <el-tag size="small" type="warning">{{ execModeLabel }}</el-tag>
+          <el-tag size="small" :type="riskLimitLabel === '风控未设限' ? 'info' : 'danger'">{{ riskLimitLabel }}</el-tag>
         </div>
       </section>
 
@@ -298,6 +320,15 @@ const runtime = ref<RuntimeForm>({
   accountId: '',
   allocatedCapital: '',
   suiteStartMode: 'auto',
+  // Plan 级风控限额（F1）：默认关闭 = 不限制，保持向导"快速创建"的轻量默认
+  riskLimitsEnabled: false,
+  riskPositionMode: 'both',
+  riskMaxOrderVolume: undefined,
+  riskMaxOrderValue: undefined,
+  riskMaxDailyValue: undefined,
+  riskMaxAccountValue: undefined,
+  riskMaxPositionValue: undefined,
+  riskMaxPositionVolume: undefined,
 })
 
 const templateMeta = computed(() => QUICK_TEMPLATES.find((item) => item.kind === templateKind.value))
@@ -318,6 +349,25 @@ const stepError = computed(() => {
 const blueprint = computed(() =>
   buildBlueprint(templateKind.value, signal.value, filter.value, executor.value, runtime.value),
 )
+
+/** 预览里的限额摘要（与 Plan 列表页口径一致）。 */
+const riskLimitLabel = computed(() => {
+  const plan = blueprint.value.plan
+  const positionLabels: Record<string, string> = {
+    long_only: '仅做多', short_only: '仅做空', flat: '不开仓',
+  }
+  const parts: string[] = []
+  if (plan.risk_position_mode && plan.risk_position_mode !== 'both') {
+    parts.push(positionLabels[plan.risk_position_mode] || plan.risk_position_mode)
+  }
+  if (plan.risk_max_order_value) parts.push(`单笔≤${plan.risk_max_order_value}`)
+  if (plan.risk_max_order_volume != null) parts.push(`单笔量≤${plan.risk_max_order_volume}`)
+  if (plan.risk_max_daily_value) parts.push(`每日≤${plan.risk_max_daily_value}`)
+  if (plan.risk_max_account_value) parts.push(`账户可用≤${plan.risk_max_account_value}`)
+  if (plan.risk_max_position_value) parts.push(`总仓位≤${plan.risk_max_position_value}`)
+  if (plan.risk_max_position_volume != null) parts.push(`总仓位量≤${plan.risk_max_position_volume}`)
+  return parts.length ? parts.join(' / ') : '风控未设限'
+})
 
 interface PreviewSuite {
   index: number
