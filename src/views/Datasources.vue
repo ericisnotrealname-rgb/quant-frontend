@@ -78,10 +78,16 @@
       <div v-if="klineRows.length" class="kline-chart-wrap">
         <div class="chart-toolbar">
           <el-checkbox v-model="showMa">显示 MA</el-checkbox>
-          <el-checkbox v-model="showVolume">显示成交量</el-checkbox>
-          <el-checkbox v-model="showMacd">显示 MACD</el-checkbox>
-          <el-checkbox v-model="showKdj">显示 KDJ</el-checkbox>
-          <el-checkbox v-model="showRsi">显示 RSI</el-checkbox>
+          <el-checkbox v-model="showVolume">成交量</el-checkbox>
+          <el-checkbox v-model="showMacd">MACD</el-checkbox>
+          <el-checkbox v-model="showKdj">KDJ</el-checkbox>
+          <el-checkbox v-model="showRsi">RSI</el-checkbox>
+          <el-checkbox v-model="showWr">WR</el-checkbox>
+          <el-checkbox v-model="showCci">CCI</el-checkbox>
+          <el-checkbox v-model="showAtr">ATR</el-checkbox>
+          <el-checkbox v-model="showObv">OBV</el-checkbox>
+          <el-checkbox v-model="showVr">VR</el-checkbox>
+          <el-checkbox v-model="showDmi">DMI</el-checkbox>
         </div>
         <div ref="chartRef" :style="{ height: chartHeight }" class="kline-chart" />
       </div>
@@ -128,6 +134,26 @@ const showVolume = ref(true)
 const showMacd = ref(false)
 const showKdj = ref(false)
 const showRsi = ref(false)
+const showWr = ref(false)
+const showCci = ref(false)
+const showAtr = ref(false)
+const showObv = ref(false)
+const showVr = ref(false)
+const showDmi = ref(false)
+
+// 附图开关清单：顺序即附图自上而下的排列顺序（渲染按此顺序生成 grid）
+const SUB_INDICATOR_FLAGS = [
+  { key: 'volume', flag: showVolume },
+  { key: 'macd', flag: showMacd },
+  { key: 'kdj', flag: showKdj },
+  { key: 'rsi', flag: showRsi },
+  { key: 'wr', flag: showWr },
+  { key: 'cci', flag: showCci },
+  { key: 'atr', flag: showAtr },
+  { key: 'obv', flag: showObv },
+  { key: 'vr', flag: showVr },
+  { key: 'dmi', flag: showDmi },
+] as const
 
 // ================= 增量数据加载：根据缩放范围自动查询日期 =================
 const autoFetching = ref(false)
@@ -170,7 +196,7 @@ const chartHeight = computed(() => {
   const panelHeight = 100
   const gap = 10 // 单独分图之间的间距
   const bottomOffset = 60 // 给底部 dataZoom 滑块预留空间，防止遮挡
-  const extra = (showVolume.value ? 1 : 0) + (showMacd.value ? 1 : 0) + (showKdj.value ? 1 : 0) + (showRsi.value ? 1 : 0)
+  const extra = SUB_INDICATOR_FLAGS.filter((item) => item.flag.value).length
   return `${20 + mainHeight + extra * (panelHeight + gap) + bottomOffset}px` // 20 为顶部 legend 预留空间
 })
 
@@ -542,6 +568,171 @@ function calculateKDJ(data: KLineQueryItem[], period = 9) {
   return { k: kValues, d: dValues, j: jValues }
 }
 
+// ================= 附图指标计算（统一口径：预热期返回 null，与 MA 一致） =================
+
+/** 真实波幅 TR = max(H-L, |H-prevC|, |L-prevC|) */
+function calculateTrueRange(data: KLineQueryItem[]) {
+  return data.map((item, i) => {
+    const high = toNumber(item.high)
+    const low = toNumber(item.low)
+    if (i === 0) return high - low
+    const prevClose = toNumber(data[i - 1].close)
+    return Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose))
+  })
+}
+
+/** Wilder 平滑（RSI / DMI / ATR 口径）：首值取窗口均值，其后 prev + (x - prev) / period */
+function wilderSmooth(values: number[], period: number): Array<number | null> {
+  const result: Array<number | null> = []
+  let prev: number | null = null
+  for (let i = 0; i < values.length; i += 1) {
+    if (i < period - 1) {
+      result.push(null)
+      continue
+    }
+    if (prev === null) {
+      prev = values.slice(0, period).reduce((sum, value) => sum + value, 0) / period
+    } else {
+      prev = prev + (values[i] - prev) / period
+    }
+    result.push(prev)
+  }
+  return result
+}
+
+/** 威廉指标 WR(N) = (HH - C) / (HH - LL) × 100，取值 0~100，>80 超买 / <20 超卖 */
+function calculateWR(data: KLineQueryItem[], period = 14) {
+  const highs = data.map((item) => toNumber(item.high))
+  const lows = data.map((item) => toNumber(item.low))
+  const closes = data.map((item) => toNumber(item.close))
+  return data.map((_, i) => {
+    if (i < period - 1) return null
+    const window = (values: number[]) => values.slice(i - period + 1, i + 1)
+    const hh = Math.max(...window(highs))
+    const ll = Math.min(...window(lows))
+    const value = hh === ll ? 50 : ((hh - closes[i]) / (hh - ll)) * 100
+    return Number(value.toFixed(4))
+  })
+}
+
+/** 顺势指标 CCI(N) = (TP - MA(TP)) / (0.015 × 平均绝对偏差)，±100 为常态边界 */
+function calculateCCI(data: KLineQueryItem[], period = 14) {
+  const typicalPrices = data.map(
+    (item) => (toNumber(item.high) + toNumber(item.low) + toNumber(item.close)) / 3,
+  )
+  return data.map((_, i) => {
+    if (i < period - 1) return null
+    const window = typicalPrices.slice(i - period + 1, i + 1)
+    const mean = window.reduce((sum, value) => sum + value, 0) / period
+    const deviation = window.reduce((sum, value) => sum + Math.abs(value - mean), 0) / period
+    const value = deviation === 0 ? 0 : (typicalPrices[i] - mean) / (0.015 * deviation)
+    return Number(value.toFixed(4))
+  })
+}
+
+/** 平均真实波幅 ATR(N)：TR 的 Wilder 平滑，度量绝对波动幅度（与 RSI 的相对波动互补） */
+function calculateATR(data: KLineQueryItem[], period = 14) {
+  const smoothed = wilderSmooth(calculateTrueRange(data), period)
+  return smoothed.map((value) => (value === null ? null : Number(value.toFixed(4))))
+}
+
+/** 能量潮 OBV：按收盘涨跌对成交量做累加，用于观察量价背离 */
+function calculateOBV(data: KLineQueryItem[]) {
+  const result: number[] = []
+  let acc = 0
+  for (let i = 0; i < data.length; i += 1) {
+    if (i > 0) {
+      const diff = toNumber(data[i].close) - toNumber(data[i - 1].close)
+      acc += diff > 0 ? toNumber(data[i].volume) : diff < 0 ? -toNumber(data[i].volume) : 0
+    }
+    result.push(acc)
+  }
+  return result
+}
+
+/** 容量比率 VR(N)：上涨日量与下跌日量之比（含收盘价修正），>150 超买 / <50 超卖 */
+function calculateVR(data: KLineQueryItem[], period = 26) {
+  const closes = data.map((item) => toNumber(item.close))
+  return data.map((_, i) => {
+    // 需要 period+1 根收盘价才能比较方向，故预热期多留一根
+    if (i < period) return null
+    let upVolume = 0
+    let downVolume = 0
+    let highest = -Infinity
+    let lowest = Infinity
+    for (let j = i - period + 1; j <= i; j += 1) {
+      highest = Math.max(highest, closes[j])
+      lowest = Math.min(lowest, closes[j])
+      if (j === 0) continue
+      const diff = closes[j] - closes[j - 1]
+      if (diff > 0) upVolume += toNumber(data[j].volume)
+      else if (diff < 0) downVolume += toNumber(data[j].volume)
+    }
+    const denominator = downVolume + (closes[i] - lowest) / 2
+    const value =
+      denominator === 0 ? 0 : ((upVolume + (highest - closes[i]) / 2) / denominator) * 100
+    return Number(value.toFixed(4))
+  })
+}
+
+/** 方向性指标 DMI(N)：+DI / -DI / ADX，ADX > 25 视为趋势成立 */
+function calculateDMI(data: KLineQueryItem[], period = 14) {
+  const plusDm: number[] = []
+  const minusDm: number[] = []
+  for (let i = 0; i < data.length; i += 1) {
+    if (i === 0) {
+      plusDm.push(0)
+      minusDm.push(0)
+      continue
+    }
+    const upMove = toNumber(data[i].high) - toNumber(data[i - 1].high)
+    const downMove = toNumber(data[i - 1].low) - toNumber(data[i].low)
+    plusDm.push(upMove > downMove && upMove > 0 ? upMove : 0)
+    minusDm.push(downMove > upMove && downMove > 0 ? downMove : 0)
+  }
+
+  const atr = wilderSmooth(calculateTrueRange(data), period)
+  const smoothPlus = wilderSmooth(plusDm, period)
+  const smoothMinus = wilderSmooth(minusDm, period)
+  const pdi: Array<number | null> = []
+  const mdi: Array<number | null> = []
+  const dx: Array<number | null> = []
+  for (let i = 0; i < data.length; i += 1) {
+    const atrValue = atr[i]
+    const plusValue = smoothPlus[i]
+    const minusValue = smoothMinus[i]
+    if (atrValue === null || plusValue === null || minusValue === null || atrValue === 0) {
+      pdi.push(null)
+      mdi.push(null)
+      dx.push(null)
+      continue
+    }
+    const plusDI = (plusValue / atrValue) * 100
+    const minusDI = (minusValue / atrValue) * 100
+    pdi.push(Number(plusDI.toFixed(4)))
+    mdi.push(Number(minusDI.toFixed(4)))
+    const total = plusDI + minusDI
+    dx.push(total === 0 ? null : Number(((Math.abs(plusDI - minusDI) / total) * 100).toFixed(4)))
+  }
+
+  // ADX = DX 的 period 期平滑。DX 预热期为 null：先压缩有效段再平滑、再映射回原下标——
+  // 若直接把预热期当 0 参与平滑，ADX 会被系统性拉低（低位恒在 25 以下的假象）
+  const validIndex: number[] = []
+  const validValues: number[] = []
+  dx.forEach((value, i) => {
+    if (value === null) return
+    validIndex.push(i)
+    validValues.push(value)
+  })
+  const smoothed = wilderSmooth(validValues, period)
+  const adx: Array<number | null> = new Array(data.length).fill(null)
+  smoothed.forEach((value, i) => {
+    if (value === null) return
+    adx[validIndex[i]] = Number(value.toFixed(4))
+  })
+  return { pdi, mdi, adx }
+}
+
 function renderKlineChart(rows: KLineQueryItem[]) {
   if (!chartRef.value) return
 
@@ -569,40 +760,178 @@ function renderKlineChart(rows: KLineQueryItem[]) {
   const ma5 = calculateMA(sortedRows, 5)
   const ma10 = calculateMA(sortedRows, 10)
   const ma20 = calculateMA(sortedRows, 20)
-  const volumeData = sortedRows.map((item) => ({
-    value: toNumber(item.volume),
-    itemStyle: {
-      color: calculateVolumeColor(toNumber(item.close), toNumber(item.open)),
-    },
-  }))
   const { dif, dea, macd } = calculateMACD(sortedRows)
   const { k, d, j } = calculateKDJ(sortedRows)
   const rsi = calculateRSI(sortedRows)
+  const wr = calculateWR(sortedRows)
+  const cci = calculateCCI(sortedRows)
+  const atr = calculateATR(sortedRows)
+  const obv = calculateOBV(sortedRows)
+  const vr = calculateVR(sortedRows)
+  const { pdi, mdi, adx } = calculateDMI(sortedRows)
 
-  // ================= 修改：动态计算 Y 轴最大/最小值并预留高度 + 取整 =================
-  // MACD：围绕 0 轴对称，取绝对值最大的一项，并预留 20% 的余量，向上取整
-  const macdMaxAbs = Math.ceil(
-    Math.max(
-      ...dif.map(Math.abs),
-      ...dea.map(Math.abs),
-      ...macd.map(Math.abs)
-    ) * 1.2
-  )
-
-  // KDJ：基于基础范围 0-100，如数据超出则动态扩充边界，并预留 15% 空间
-  const kdjMax = Math.max(...k.filter(v => v !== null), ...d.filter(v => v !== null), ...j.filter(v => v !== null))
-  const kdjMin = Math.min(...k.filter(v => v !== null), ...d.filter(v => v !== null), ...j.filter(v => v !== null))
-  const kdjRange = kdjMax - kdjMin
-  const kdjBoundaryMax = Math.ceil(Math.max(100, kdjMax + kdjRange * 0.15)) // 向上取整
-  const kdjBoundaryMin = Math.floor(Math.min(0, kdjMin - kdjRange * 0.15)) // 向下取整
-
-  // RSI：基于基础范围 0-100，如数据超出则动态扩充边界，并预留 15% 空间
-  const rsiMax = Math.max(...rsi.filter(v => v !== null))
-  const rsiMin = Math.min(...rsi.filter(v => v !== null))
-  const rsiRange = rsiMax - rsiMin
-  const rsiBoundaryMax = Math.ceil(Math.max(100, rsiMax + rsiRange * 0.15)) // 向上取整
-  const rsiBoundaryMin = Math.floor(Math.min(0, rsiMin - rsiRange * 0.15)) // 向下取整
   // ==============================================================================
+  // 附图指标定义表（声明式）：新增指标只需追加一条，布局/坐标轴/图例自动生成。
+  // yRange 返回固定边界（缺省则由 ECharts 自适应）；refs 为水平参考虚线。
+  // ==============================================================================
+
+  /** Y 轴对称边界（围绕 0），用于 MACD / CCI 这类有明确中轴的指标 */
+  function symmetricRange(lines: Array<Array<number | null>>, padding = 1.2) {
+    let maxAbs = 0
+    lines.forEach((line) => {
+      line.forEach((value) => {
+        if (value !== null) maxAbs = Math.max(maxAbs, Math.abs(value))
+      })
+    })
+    const bound = Math.ceil(maxAbs * padding)
+    return { min: -bound, max: bound }
+  }
+
+  /** 有基础量程（0-100）的指标边界：数据超出时动态扩充并预留 15% 空间 */
+  function rangedBoundary(lines: Array<Array<number | null>>, baseMin: number, baseMax: number) {
+    const values: number[] = []
+    lines.forEach((line) => line.forEach((value) => { if (value !== null) values.push(value) }))
+    if (values.length === 0) return { min: baseMin, max: baseMax }
+    const max = Math.max(...values)
+    const min = Math.min(...values)
+    const range = max - min
+    return {
+      min: Math.floor(Math.min(baseMin, min - range * 0.15)),
+      max: Math.ceil(Math.max(baseMax, max + range * 0.15)),
+    }
+  }
+
+  interface SubSeries {
+    name: string
+    type: 'line' | 'bar'
+    data: Array<number | null>
+    color: string
+    barWidth?: string
+    /** 柱状按值正负着色（MACD 柱） */
+    colorBySign?: boolean
+    /** 柱状按当日涨跌着色（成交量柱） */
+    colorByCandle?: boolean
+  }
+
+  interface SubIndicatorDef {
+    key: string
+    label: string
+    enabled: () => boolean
+    series: SubSeries[]
+    /** Y 轴固定边界；min 必填（可锁 0 基线），max=0 表示上界交由 ECharts 自适应 */
+    yRange?: { min: number; max: number }
+    yFormatter?: (value: number) => string
+    refs?: Array<{ value: number; color: string }>
+  }
+
+  const subIndicators: SubIndicatorDef[] = [
+    {
+      key: 'volume',
+      label: '成交量',
+      enabled: () => showVolume.value,
+      series: [{
+        name: '成交量',
+        type: 'bar',
+        data: sortedRows.map((item) => toNumber(item.volume)),
+        color: '#26a69a',
+        barWidth: '60%',
+        colorByCandle: true,
+      }],
+      yRange: { min: 0, max: 0 },
+      yFormatter: (value: number) => `${(value / 10000).toFixed(1)}w`,
+    },
+    {
+      key: 'macd',
+      label: 'MACD',
+      enabled: () => showMacd.value,
+      series: [
+        { name: 'DIF', type: 'line', data: dif, color: '#5b8def' },
+        { name: 'DEA', type: 'line', data: dea, color: '#f59e0b' },
+        { name: 'MACD', type: 'bar', data: macd, color: '#26a69a', barWidth: '60%', colorBySign: true },
+      ],
+      // MACD：围绕 0 轴对称，取绝对值最大项并预留 20% 余量
+      yRange: symmetricRange([dif, dea, macd]),
+    },
+    {
+      key: 'kdj',
+      label: 'KDJ',
+      enabled: () => showKdj.value,
+      series: [
+        { name: 'K', type: 'line', data: k, color: '#ec4899' },
+        { name: 'D', type: 'line', data: d, color: '#8b5cf6' },
+        { name: 'J', type: 'line', data: j, color: '#f97316' },
+      ],
+      yRange: rangedBoundary([k, d, j], 0, 100),
+      refs: [{ value: 80, color: '#f59e0b' }, { value: 20, color: '#6b7280' }],
+    },
+    {
+      key: 'rsi',
+      label: 'RSI',
+      enabled: () => showRsi.value,
+      series: [{ name: 'RSI', type: 'line', data: rsi, color: '#10b981' }],
+      yRange: rangedBoundary([rsi], 0, 100),
+      refs: [{ value: 70, color: '#f59e0b' }, { value: 30, color: '#6b7280' }],
+    },
+    {
+      key: 'wr',
+      label: 'WR(14)',
+      enabled: () => showWr.value,
+      series: [{ name: 'WR', type: 'line', data: wr, color: '#0ea5e9' }],
+      // WR 天然落在 0~100，固定边界即可，无需随数据浮动
+      yRange: { min: 0, max: 100 },
+      refs: [{ value: 80, color: '#f59e0b' }, { value: 20, color: '#6b7280' }],
+    },
+    {
+      key: 'cci',
+      label: 'CCI(14)',
+      enabled: () => showCci.value,
+      series: [{ name: 'CCI', type: 'line', data: cci, color: '#14b8a6' }],
+      // CCI 常态 ±100，极端行情可远越；边界取「至少 ±100」再按数据对称扩展
+      yRange: (() => {
+        const base = symmetricRange([cci], 1.1)
+        const bound = Math.max(Math.abs(base.min), 100)
+        return { min: -bound, max: bound }
+      })(),
+      refs: [{ value: 100, color: '#f59e0b' }, { value: -100, color: '#6b7280' }],
+    },
+    {
+      key: 'atr',
+      label: 'ATR(14)',
+      enabled: () => showAtr.value,
+      series: [{ name: 'ATR', type: 'line', data: atr, color: '#6366f1' }],
+    },
+    {
+      key: 'obv',
+      label: 'OBV',
+      enabled: () => showObv.value,
+      series: [{ name: 'OBV', type: 'line', data: obv, color: '#d946ef' }],
+    },
+    {
+      key: 'vr',
+      label: 'VR(26)',
+      enabled: () => showVr.value,
+      series: [{ name: 'VR', type: 'line', data: vr, color: '#84cc16' }],
+      refs: [{ value: 150, color: '#f59e0b' }, { value: 50, color: '#6b7280' }],
+    },
+    {
+      key: 'dmi',
+      label: 'DMI(14)',
+      enabled: () => showDmi.value,
+      series: [
+        { name: '+DI', type: 'line', data: pdi, color: '#22c55e' },
+        { name: '-DI', type: 'line', data: mdi, color: '#ef4444' },
+        { name: 'ADX', type: 'line', data: adx, color: '#eab308' },
+      ],
+      // ADX > 25 视为趋势成立，故下限保证 25 参考线始终可见
+      yRange: (() => {
+        const base = rangedBoundary([pdi, mdi, adx], 0, 25)
+        return base
+      })(),
+      refs: [{ value: 25, color: '#f59e0b' }],
+    },
+  ]
+
+  const activeSubIndicators = subIndicators.filter((item) => item.enabled())
 
   // 独立分图构建，确保取消勾选后彻底隐藏且自动向上排布
   const grids: any[] = []
@@ -615,29 +944,11 @@ function renderKlineChart(rows: KLineQueryItem[]) {
   grids.push({ left: 16, right: 16, top: currentTop, height: mainHeight, containLabel: true })
   currentTop += mainHeight + gap
 
-  // 成交量
-  if (showVolume.value) {
+  // 附图按定义表顺序依次占位，取消勾选即不占空间（下方坐标轴/序列同源生成，天然对齐）
+  activeSubIndicators.forEach(() => {
     grids.push({ left: 16, right: 16, top: currentTop, height: panelHeight, containLabel: true })
     currentTop += panelHeight + gap
-  }
-
-  // MACD
-  if (showMacd.value) {
-    grids.push({ left: 16, right: 16, top: currentTop, height: panelHeight, containLabel: true })
-    currentTop += panelHeight + gap
-  }
-
-  // KDJ
-  if (showKdj.value) {
-    grids.push({ left: 16, right: 16, top: currentTop, height: panelHeight, containLabel: true })
-    currentTop += panelHeight + gap
-  }
-
-  // RSI
-  if (showRsi.value) {
-    grids.push({ left: 16, right: 16, top: currentTop, height: panelHeight, containLabel: true })
-    currentTop += panelHeight + gap
-  }
+  })
 
   const xAxis: any[] = [{
     type: 'category',
@@ -687,15 +998,13 @@ function renderKlineChart(rows: KLineQueryItem[]) {
     })
   }
 
-  // 动态记录当前附图索引，保证和 grids 数组索引对应
-  let currentGridIndex = 1
-  let currentAxisIndex = 1
+  // 附图坐标轴与序列：按定义表统一生成（gridIndex 与 grids 数组下标天然对齐）
+  activeSubIndicators.forEach((indicator, index) => {
+    const gridIndex = index + 1
 
-  // 1: 成交量
-  if (showVolume.value) {
     xAxis.push({
       type: 'category',
-      gridIndex: currentGridIndex,
+      gridIndex,
       data: dates,
       boundaryGap: false,
       axisLine: { lineStyle: { color: '#d9dee8' } },
@@ -703,193 +1012,61 @@ function renderKlineChart(rows: KLineQueryItem[]) {
       axisLabel: { show: false },
       splitLine: { show: false },
     })
+
+    // yRange 未声明时用 scale 自适应（如 ATR / OBV 这类无固定量程的指标）；
+    // max=0 是「只锁下限」的哨兵值（成交量柱必须 0 基线，上界交给 ECharts）
+    const yRange = indicator.yRange
     yAxis.push({
       type: 'value',
-      gridIndex: currentGridIndex,
-      scale: true,
-      axisLabel: { color: '#667085', formatter: (value: number) => `${(value / 10000).toFixed(1)}w` },
+      gridIndex,
+      scale: yRange ? false : true,
+      ...(yRange && yRange.min !== undefined ? { min: yRange.min } : {}),
+      ...(yRange && yRange.max > yRange.min ? { max: yRange.max } : {}),
+      axisLabel: {
+        color: '#667085',
+        ...(indicator.yFormatter ? { formatter: indicator.yFormatter } : {}),
+      },
       splitLine: { lineStyle: { color: '#edf1f7' } },
     })
-    series.push({
-      name: '成交量',
-      type: 'bar',
-      xAxisIndex: currentAxisIndex,
-      yAxisIndex: currentAxisIndex,
-      data: volumeData,
-      barWidth: '60%',
-      itemStyle: {
-        color: (params: any) => {
-          const index = params.dataIndex
-          const current = sortedRows[index]
-          if (!current) return '#26a69a'
+
+    indicator.series.forEach((item) => {
+      const itemStyle: Record<string, unknown> = { color: item.color }
+      if (item.colorBySign) {
+        itemStyle.color = (params: any) => ((params.data ?? 0) >= 0 ? '#26a69a' : '#ef5350')
+      }
+      if (item.colorByCandle) {
+        itemStyle.color = (params: any) => {
+          const current = sortedRows[params.dataIndex]
+          if (!current) return item.color
           return calculateVolumeColor(toNumber(current.close), toNumber(current.open))
-        },
-      },
+        }
+      }
+      series.push({
+        name: item.name,
+        type: item.type,
+        xAxisIndex: gridIndex,
+        yAxisIndex: gridIndex,
+        data: item.data,
+        ...(item.type === 'bar'
+          ? { barWidth: item.barWidth ?? '60%', itemStyle }
+          : { smooth: true, symbol: 'none', lineStyle: { width: 1.5, color: item.color }, itemStyle }),
+      })
     })
-    currentGridIndex++
-    currentAxisIndex++
-  }
 
-  // 2: MACD (应用动态 Y 轴配置)
-  if (showMacd.value) {
-    xAxis.push({
-      type: 'category',
-      gridIndex: currentGridIndex,
-      data: dates,
-      boundaryGap: false,
-      axisLine: { lineStyle: { color: '#d9dee8' } },
-      axisTick: { show: false },
-      axisLabel: { show: false },
-      splitLine: { show: false },
+    // 参考虚线（超买超卖线等）：silent 不响应交互，也从图例中排除
+    indicator.refs?.forEach((reference, refIndex) => {
+      series.push({
+        name: `${indicator.label} ref${refIndex}`,
+        type: 'line',
+        xAxisIndex: gridIndex,
+        yAxisIndex: gridIndex,
+        data: Array(dates.length).fill(reference.value),
+        lineStyle: { width: 1, color: reference.color, type: 'dashed' },
+        symbol: 'none',
+        silent: true,
+      })
     })
-    yAxis.push({
-      type: 'value',
-      gridIndex: currentGridIndex,
-      axisLabel: { color: '#667085' },
-      max: macdMaxAbs, // 向上取整后传入，负数取反即为向下取整
-      min: -macdMaxAbs, 
-      splitLine: { lineStyle: { color: '#edf1f7' } },
-    })
-    series.push({
-      name: 'DIF',
-      type: 'line',
-      xAxisIndex: currentAxisIndex,
-      yAxisIndex: currentAxisIndex,
-      data: dif,
-      smooth: true,
-      lineStyle: { width: 1.5, color: '#5b8def' },
-      symbol: 'none',
-    })
-    series.push({
-      name: 'DEA',
-      type: 'line',
-      xAxisIndex: currentAxisIndex,
-      yAxisIndex: currentAxisIndex,
-      data: dea,
-      smooth: true,
-      lineStyle: { width: 1.5, color: '#f59e0b' },
-      symbol: 'none',
-    })
-    series.push({
-      name: 'MACD',
-      type: 'bar',
-      xAxisIndex: currentAxisIndex,
-      yAxisIndex: currentAxisIndex,
-      data: macd,
-      barWidth: '60%',
-      itemStyle: {
-        color: (params: any) => (params.data >= 0 ? '#26a69a' : '#ef5350'),
-      },
-    })
-    currentGridIndex++
-    currentAxisIndex++
-  }
-
-  // 3: KDJ (应用动态 Y 轴配置)
-  if (showKdj.value) {
-    xAxis.push({
-      type: 'category',
-      gridIndex: currentGridIndex,
-      data: dates,
-      boundaryGap: false,
-      axisLine: { lineStyle: { color: '#d9dee8' } },
-      axisTick: { show: false },
-      axisLabel: { show: false },
-      splitLine: { show: false },
-    })
-    yAxis.push({
-      type: 'value',
-      gridIndex: currentGridIndex,
-      min: kdjBoundaryMin, // 向下取整
-      max: kdjBoundaryMax, // 向上取整
-      axisLabel: { color: '#667085' },
-      splitLine: { lineStyle: { color: '#edf1f7' } },
-    })
-    series.push({
-      name: 'K',
-      type: 'line',
-      xAxisIndex: currentAxisIndex,
-      yAxisIndex: currentAxisIndex,
-      data: k,
-      smooth: true,
-      lineStyle: { width: 1.5, color: '#ec4899' },
-      symbol: 'none',
-    })
-    series.push({
-      name: 'D',
-      type: 'line',
-      xAxisIndex: currentAxisIndex,
-      yAxisIndex: currentAxisIndex,
-      data: d,
-      smooth: true,
-      lineStyle: { width: 1.5, color: '#8b5cf6' },
-      symbol: 'none',
-    })
-    series.push({
-      name: 'J',
-      type: 'line',
-      xAxisIndex: currentAxisIndex,
-      yAxisIndex: currentAxisIndex,
-      data: j,
-      smooth: true,
-      lineStyle: { width: 1.5, color: '#f97316' },
-      symbol: 'none',
-    })
-    currentGridIndex++
-    currentAxisIndex++
-  }
-
-  // 4: RSI (应用动态 Y 轴配置)
-  if (showRsi.value) {
-    xAxis.push({
-      type: 'category',
-      gridIndex: currentGridIndex,
-      data: dates,
-      boundaryGap: false,
-      axisLine: { lineStyle: { color: '#d9dee8' } },
-      axisTick: { show: false },
-      axisLabel: { show: false },
-      splitLine: { show: false },
-    })
-    yAxis.push({
-      type: 'value',
-      gridIndex: currentGridIndex,
-      min: rsiBoundaryMin, // 向下取整
-      max: rsiBoundaryMax, // 向上取整
-      axisLabel: { color: '#667085' },
-      splitLine: { lineStyle: { color: '#edf1f7' } },
-    })
-    series.push({
-      name: 'RSI',
-      type: 'line',
-      xAxisIndex: currentAxisIndex,
-      yAxisIndex: currentAxisIndex,
-      data: rsi,
-      smooth: true,
-      lineStyle: { width: 1.5, color: '#10b981' },
-      symbol: 'none',
-    })
-    series.push({
-      name: 'RSI 70',
-      type: 'line',
-      xAxisIndex: currentAxisIndex,
-      yAxisIndex: currentAxisIndex,
-      data: Array(dates.length).fill(70),
-      lineStyle: { width: 1, color: '#f59e0b', type: 'dashed' },
-      symbol: 'none',
-      silent: true,
-    })
-    series.push({
-      name: 'RSI 30',
-      type: 'line',
-      xAxisIndex: currentAxisIndex,
-      yAxisIndex: currentAxisIndex,
-      data: Array(dates.length).fill(30),
-      lineStyle: { width: 1, color: '#6b7280', type: 'dashed' },
-      symbol: 'none',
-      silent: true,
-    })
-  }
+  })
 
   // 传入 true (notMerge) 强制全量重绘，彻底消除隐藏后残留的旧图重叠
   chartInstance.setOption({
@@ -905,7 +1082,8 @@ function renderKlineChart(rows: KLineQueryItem[]) {
     legend: {
       top: 0,
       left: 'center',
-      data: series.filter((item) => item.name && !['RSI 70', 'RSI 30'].includes(item.name)).map((item) => item.name),
+      // 参考虚线（silent）不进图例；否则每个附图的超买超卖线都会挤占图例区
+      data: series.filter((item) => item.name && !item.silent).map((item) => item.name),
       textStyle: { fontSize: 11 },
     },
     grid: grids,
@@ -932,7 +1110,8 @@ function renderKlineChart(rows: KLineQueryItem[]) {
 
 // ================= 修复：监听 chartHeight 变化，并调用 resize 使图表自适应 =================
 watch(
-  [klineRows, showVolume, showMacd, showKdj, showRsi, chartHeight],
+  // 监听全部附图开关：任一指标增减都会改变图表总高度，需重绘 + resize
+  [klineRows, ...SUB_INDICATOR_FLAGS.map((item) => item.flag), chartHeight],
   ([rows]) => {
     if (rows.length) {
       nextTick(() => {
