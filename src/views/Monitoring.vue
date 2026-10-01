@@ -63,8 +63,8 @@
           </span>
           <span class="dot blue" />现价
           <span class="dot yellow" />均价
-          <span class="dot red" />上涨
-          <span class="dot green" />下跌
+          <span class="dot red" />分钟上涨
+          <span class="dot green" />分钟下跌
         </div>
       </div>
       <div v-if="points.length" ref="chartRef" class="chart" :style="{ height: chartHeight }" />
@@ -307,6 +307,71 @@ function computeRsi(closes: Num[], period = 14): Num[] {
   return out
 }
 
+/**
+ * 分钟成交量 = 相邻「累计成交量」差分。
+ *
+ * 后端 ``IntradayPoint.volume`` 是当日累计值（gm ``cum_volume`` / akshare spot 累计口径），
+ * 直接按累计值画柱只会得到一条单调递增的斜坡，无法反映盘中量能分布。
+ * 处理约定：
+ * - 首个有效点：开盘至今的累计量即该分钟量；
+ * - 数据缺口（缺前一交易分钟）：置 ``null`` 不画柱——把多分钟的量压到一根柱上会造出假天量；
+ * - 累计值回退（数据源重置）：夹到 0，避免出现负柱。
+ */
+function computeMinuteVolumes(cumVolumes: Num[]): Num[] {
+  const out: Num[] = new Array(cumVolumes.length).fill(null)
+  let prev: number | null = null
+  for (let i = 0; i < cumVolumes.length; i += 1) {
+    const cum = cumVolumes[i]
+    if (cum === null) {
+      // 缺口：重置基准，避免下一根柱吞掉多分钟的量
+      prev = null
+      continue
+    }
+    if (prev === null) {
+      out[i] = i === 0 ? Math.max(0, cum) : null
+    } else {
+      out[i] = Math.max(0, cum - prev)
+    }
+    prev = cum
+  }
+  return out
+}
+
+/** 简单移动平均：窗口内有效样本不足 period 时返回 null（不用残缺样本伪造均线） */
+function computeMovingAverage(values: Num[], period: number): Num[] {
+  const out: Num[] = new Array(values.length).fill(null)
+  for (let i = 0; i < values.length; i += 1) {
+    if (values[i] === null) continue
+    let sum = 0
+    let count = 0
+    for (let n = Math.max(0, i - period + 1); n <= i; n += 1) {
+      const value = values[n]
+      if (value === null) continue
+      sum += value
+      count += 1
+    }
+    out[i] = count >= period ? sum / period : null
+  }
+  return out
+}
+
+/** 每分钟涨跌方向（1 涨 / 0 平 / -1 跌）：与前一分比较，首根以昨收（或开盘价）为基准 */
+function computeMinuteDirections(prices: Num[], basePrice: number): number[] {
+  const out: number[] = new Array(prices.length).fill(0)
+  let prev: number | null = null
+  for (let i = 0; i < prices.length; i += 1) {
+    const price = prices[i]
+    if (price === null) {
+      prev = null
+      continue
+    }
+    const reference = prev ?? (basePrice > 0 ? basePrice : null)
+    out[i] = reference === null ? 0 : price > reference ? 1 : price < reference ? -1 : 0
+    prev = price
+  }
+  return out
+}
+
 const timezone = computed(() => payload.value?.timezone ?? '-')
 const marketLabel = computed(() => MARKET_LABELS[payload.value?.market ?? ''] ?? payload.value?.market ?? '-')
 const sessionStatus = computed(() => payload.value?.session_status ?? 'closed')
@@ -400,7 +465,6 @@ function renderChart() {
   const prices: Array<number | null> = new Array(fixedTimes.length).fill(null)
   const avgPrices: Array<number | null> = new Array(fixedTimes.length).fill(null)
   const volumes: Array<number | null> = new Array(fixedTimes.length).fill(null)
-  const changes: Array<number | null> = new Array(fixedTimes.length).fill(null)
   const pointByTime = new Map<string, IntradayPointItem>()
   for (const point of points.value) {
     const index = timeIndex.get(point.local_time)
@@ -408,13 +472,22 @@ function renderChart() {
     prices[index] = Number(point.price)
     avgPrices[index] = point.avg_price === null || point.avg_price === '' ? null : Number(point.avg_price)
     volumes[index] = point.volume
-    changes[index] = Number(point.change)
     pointByTime.set(point.local_time, point)
   }
-  const volumeBars = volumes.map((volume, index) => ({
-    value: volume,
-    itemStyle: { color: (changes[index] ?? 0) > 0 ? '#dc2626' : (changes[index] ?? 0) < 0 ? '#16a34a' : '#94a3b8' },
+  // 量能子图：后端 volume/amount 均为当日累计值，柱状必须画「分钟增量」而非累计斜坡
+  const minuteVolumes = computeMinuteVolumes(volumes)
+  // 柱子按「当分钟涨跌」着色（红涨绿跌），而非按当日累计涨跌幅——
+  // 后者在单边行情下会让全天柱子同色，丢失当分钟多空信息
+  const minuteDirections = computeMinuteDirections(prices, Number(payload.value?.pre_close ?? 0))
+  const volumeBars = minuteVolumes.map((value, index) => ({
+    value,
+    itemStyle: {
+      color: minuteDirections[index] > 0 ? '#dc2626' : minuteDirections[index] < 0 ? '#16a34a' : '#94a3b8',
+    },
   }))
+  // 量能均线：VOL MA5 / MA10，用于识别放量 / 缩量
+  const volumeMa5 = computeMovingAverage(minuteVolumes, 5)
+  const volumeMa10 = computeMovingAverage(minuteVolumes, 10)
   const highs: Num[] = new Array(fixedTimes.length).fill(null)
   const lows: Num[] = new Array(fixedTimes.length).fill(null)
   for (const point of points.value) {
@@ -449,23 +522,29 @@ function renderChart() {
       formatter: (params: unknown) => {
         const list = params as unknown as Array<{ dataIndex?: number }>
         if (!Array.isArray(list) || list.length === 0) return ''
-        const point = pointByTime.get(fixedTimes[Number(list[0].dataIndex ?? 0)])
+        const dataIndex = Number(list[0].dataIndex ?? 0)
+        const point = pointByTime.get(fixedTimes[dataIndex])
         if (!point) return ''
         const change = Number(point.change)
         const changeColor = change > 0 ? '#dc2626' : change < 0 ? '#16a34a' : '#667085'
+        const minuteVolume = minuteVolumes[dataIndex]
         const rows = [
           `<b>${point.local_time}</b>`,
           `现价：${point.price}`,
           point.avg_price !== null && point.avg_price !== '' ? `均价：${point.avg_price}` : '',
           `涨跌幅：<span style="color:${changeColor}">${point.change}%</span>`,
-          `成交量：${point.volume}`,
-          point.amount !== null && point.amount !== '' ? `成交额：${point.amount}` : '',
+          // 量能柱画的是分钟增量（累计量差分），两个口径都要给出，避免与柱子对不上
+          minuteVolume === null || minuteVolume === undefined
+            ? ''
+            : `分钟量：${formatCompact(minuteVolume)}`,
+          `累计量：${formatCompact(point.volume)}`,
+          point.amount !== null && point.amount !== '' ? `累计额：${point.amount}` : '',
         ]
         return rows.filter(Boolean).join('<br/>')
       },
     },
     legend: {
-      data: ['现价', '均价'],
+      data: ['现价', '均价', '成交量', '量MA5', '量MA10'],
       top: 6,
       itemGap: 16,
       textStyle: { color: '#475467' },
@@ -508,7 +587,10 @@ function renderChart() {
         gridIndex: 1,
         name: '量',
         nameTextStyle: { color: '#98a2b3' },
+        // 量能一律 0 基线：非 0 基线会视觉放大分钟量差异
+        min: 0,
         axisLabel: { color: '#98a2b3', formatter: formatCompact },
+        splitNumber: 2,
         splitLine: { show: false },
       },
     ],
@@ -539,6 +621,30 @@ function renderChart() {
         data: volumeBars,
         barWidth: '62%',
         tooltip: { show: false },
+      },
+      {
+        name: '量MA5',
+        type: 'line',
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: volumeMa5,
+        showSymbol: false,
+        smooth: true,
+        lineStyle: { color: '#f59e0b', width: 1.2 },
+        tooltip: { show: false },
+        emphasis: { focus: 'series' },
+      },
+      {
+        name: '量MA10',
+        type: 'line',
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: volumeMa10,
+        showSymbol: false,
+        smooth: true,
+        lineStyle: { color: '#8b5cf6', width: 1.2 },
+        tooltip: { show: false },
+        emphasis: { focus: 'series' },
       },
     ],
     dataZoom: [
@@ -578,9 +684,9 @@ function applyIndicatorLayout(option: Record<string, unknown>, ctx: IndicatorCon
   const xAxes = option.xAxis as Array<Record<string, unknown>>
   const yAxes = option.yAxis as Array<Record<string, unknown>>
   const series = option.series as Array<Record<string, unknown>>
-  // 重新分配纵向空间：主图 30% / 量图 10% / 指标各 11%（间隔 2%），dataZoom 常驻底部
+  // 重新分配纵向空间：主图 30% / 量图 12%（容纳量MA5/量MA10）/ 指标各 11%（间隔 2%），dataZoom 常驻底部
   grids[0] = { ...grids[0], top: 34, height: '30%' }
-  grids[1] = { ...grids[1], top: '42%', height: '10%' }
+  grids[1] = { ...grids[1], top: '42%', height: '12%' }
 
   const enabled: Array<{ name: string; build: (gridIndex: number) => Record<string, unknown>[] }> = []
   if (ctx.showMacd) {
@@ -619,7 +725,7 @@ function applyIndicatorLayout(option: Record<string, unknown>, ctx: IndicatorCon
   }
   if (enabled.length === 0) return
 
-  let top = 55
+  let top = 56
   for (const sub of enabled) {
     const gridIndex = xAxes.length
     grids.push({ left: 66, right: 20, top: `${top}%`, height: '11%' })

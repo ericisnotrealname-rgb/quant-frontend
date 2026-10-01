@@ -1,10 +1,11 @@
 # 量化交易平台 · 前端开发文档
 
-> 版本：v2.3  
-> 日期：2026-09-09  
+> 版本：v2.5  
+> 日期：2026-10-01  
 > 状态：需求冻结 · 按功能清单实现前端界面设计
 >
 > 变更记录：
+> - v2.5（2026-10-01）：新增「分时监控」模块章节（2.12，此前仅存在于后端 documents.md 模块9）——含分时图布局、分时技术指标子图、SSE 推送与降级；**量能附图口径修正**：后端 `volume` / `amount` 为当日累计值，附图改画**分钟增量**（相邻累计值差分，缺口不画柱）、柱子按**当分钟涨跌**着色、新增**量MA5 / 量MA10**、量能轴 0 基线、tooltip 同时给出分钟量与累计量；事件类型管理（2.9）补「叠加基事件」列，与后端 EX-27 叠加约束对齐；导航模块清单补运行总览 / 分时监控 / 策略快速创建。
 > - v2.4（2026-09-10）：新增「策略设计器」模块（对接后端 Suite 拓扑与 NodeRun 轨迹接口）；基于 @vue-flow/core 实现画布拖拽编排、编排边条件配置与执行轨迹回放；侧边导航同步新增菜单项。
 > - v2.3（2026-09-09）：新增「告警管理」与「告警渠道配置」两个模块，对接后端 `execution` 告警（Alert / AlertChannel）接口；侧边导航同步新增对应菜单项。
 > - v2.2（2026-09-07）：新增「运行状态管理」模块（对接后端 Case/Suite/Plan 三级 run_status 状态机）；Plan/Suite 管理页新增启动/停止按钮、状态标签；Case 列表新增运行状态列。
@@ -45,6 +46,9 @@
 - 事件类型管理
 - 告警管理（Alerts）
 - 告警渠道（Alert Channels）
+- 运行总览（Dashboard）
+- 分时监控（Intraday Monitoring）
+- 策略快速创建（Quick Strategy）
 
 ## 二、功能模块清单
 
@@ -350,15 +354,17 @@
 
 ### 2.9 事件类型管理模块
 
-- 以表格展示所有已注册事件类型。
+- 以表格展示所有已注册事件类型（来自 `GET /api/execution/event-types/list-all/`，只读）。
 - 列包括：
   - 事件类型名称
   - 作用域
+  - 叠加基事件
   - 描述
 - 作用域枚举：
   - 系统内置
   - 插件定义
   - 用户自定义
+- **叠加基事件（v2.5 跟进）**：用户自定义事件仅支持**叠加在系统自带事件之上**，列显示 `base_event_type`（系统内置事件为空时显示 `—`），用于让用户看清该事件复用哪条系统事件通道。
 - 该模块为只读展示，不提供增删改。
 
 ---
@@ -406,6 +412,50 @@
 
 #### 2.11.4 重新加载
 - 页面提供"重新加载"按钮，调用 `POST /api/execution/alert-channels/reload/`，使渠道配置变更立即在 `alert_service` 生效。
+
+---
+
+### 2.12 分时监控模块（v2.5 补录）
+
+对接后端 `monitoring.IntradayPoint`，盘中查看标的分时走势（页面 `src/views/Monitoring.vue`，路由 `/monitoring`，侧边菜单「分时监控」）。
+
+#### 2.12.1 数据契约
+- `points[]` 每项：`ts`（UTC ISO-8601）、`local_time`（市场本地 `HH:MM`）、`price`、`change`（涨跌幅 %）、**`volume`（当日累计成交量）**、**`amount`（当日累计成交额）**、`avg_price` / `high` / `low` / `open_price` / `pre_close`。
+- 载荷级字段：`symbol` / `market`（A / HK / US）/ `timezone` / `session_status`（`trading` / `lunch_break` / `pre_market` / `closed`）/ `pre_close`。
+
+#### 2.12.2 图表布局
+- 主图：现价折线（蓝）+ 均价虚线（黄），X 轴按 `market` 固定为全交易分钟刻度（A=240 / HK=330 / US=390），缺失分钟为 `null` 断点，**不随已有数据伸缩**。
+- Y 轴以昨收为中心，最小振幅 = `max(实际波动, 用户设定%) × 1.05`，右上角 `el-input-number` 可调并持久化到 `localStorage('monitoring.yMinSpanPct')`。
+- 附图：`dataZoom` 滑块常驻底部并联动全部分时（`inside` 默认缩放 40%–100%）。
+
+#### 2.12.3 量能附图口径（关键约定）
+
+> ⚠️ 后端 `volume` / `amount` 是**当日累计值**（数据源累计口径），前端附图必须按以下约定换算，否则画出来的是一条单调递增的斜坡。
+
+- **分钟量 = 相邻累计量差分**（`computeMinuteVolumes`）：
+  - 首个有效点：开盘至今的累计量即该分钟量；
+  - **数据缺口**（缺前一交易分钟，如漏采或午休边界）：置 `null` **不画柱**——把多分钟的量压到一根柱上会造出假天量；
+  - 累计值回退（数据源重置）：夹到 `0`，避免负柱。
+- **柱子着色按「当分钟涨跌」**（`computeMinuteDirections`，红涨绿跌，首根以昨收为基准）。**不可**用「当日累计涨跌幅」着色——单边行情下会让全天柱子同色，丢失当分钟多空信息。
+- **量能均线**：叠加 `量MA5` / `量MA10`（`computeMovingAverage`），窗口内有效样本不足时返回 `null`，不用残缺样本伪造均线。
+- **量能轴**：强制 `min: 0`（非 0 基线会视觉放大分钟量差异）、`splitNumber: 2`、刻度用万 / k 缩写（`formatCompact`）。
+- **tooltip 口径**：`trigger: 'axis'` 跨图联动，同时给出 **分钟量 / 累计量 / 累计额**——只显示累计量会与柱高对不上。
+- 图例与页面图例同步：`现价` / `均价` / `成交量` / `量MA5` / `量MA10`；面板图例标注「分钟上涨 / 分钟下跌」。
+
+#### 2.12.4 分时技术指标子图
+- 主图下方按需追加 **MACD(12,26,9)**、**KDJ(9,3,3)**、**RSI(14)** 三个独立 grid，复选框开关（默认 MACD 开），状态持久化到 `localStorage('monitoring.indicators')`。
+- 指标在**前端按逐分钟序列实时计算**（EMA / Wilder 平滑，缺数据分钟为 `null`），随 SSE tick 增量更新自动重算；多 grid 通过 `axisPointer` + `dataZoom` 全图联动。
+- 图表容器高度随启用指标数自适应。
+
+#### 2.12.5 数据获取与切换
+- **SSE 持久化连接**：`GET /api/monitoring/intraday/stream/?symbol=`（EventSource），`snapshot` 全量 → `tick` 按 `ts` 增量合并 → `session` 状态变化即时更新；连接连续 3 次失败且未收到任何消息时**自动降级回 15s HTTP 轮询**（`GET /api/monitoring/intraday/`），状态标签显示「实时推送 (SSE) / 轮询中（降级）/ 推送已暂停」。
+- 标的切换：下拉（自选池 → 回退全量标的）；切换时销毁旧 ECharts 实例并重建，避免旧实例绑定在已脱离文档的节点上。
+- 非交易时段显示「已收盘 / 午休 / 开盘前」提示并暂停轮询。
+
+#### 2.12.6 接口
+- 当日分时序列：`GET /api/monitoring/intraday/?symbol=<code>`
+- 最新一条 + 实时快照合并：`GET /api/monitoring/intraday/realtime/?symbol=<code>`
+- SSE 推送：`GET /api/monitoring/intraday/stream/?symbol=<code>`（`interval` 5~60s，缺省 15）
 
 ---
 
