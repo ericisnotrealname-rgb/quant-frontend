@@ -88,6 +88,40 @@
           <el-checkbox v-model="showObv">OBV</el-checkbox>
           <el-checkbox v-model="showVr">VR</el-checkbox>
           <el-checkbox v-model="showDmi">DMI</el-checkbox>
+          <el-checkbox v-model="showVps">量价信号</el-checkbox>
+        </div>
+        <div v-if="showVps" class="vps-panel">
+          <el-alert type="info" :closable="false" class="vps-tip">
+            <template #title>
+              <span class="vps-legend">
+                <i class="vps-swatch bottom" />底部放量（低位 + 显著放量，吸筹特征）
+                <i class="vps-swatch high" />高位放量（高位 + 显著放量，出货警示）
+                <i class="vps-swatch none" />其余无信号
+                <span class="vps-stats">
+                  近 60 交易日：底部放量 <b class="bottom">{{ vpsSummary.bottom }}</b> 次 ·
+                  高位放量 <b class="high">{{ vpsSummary.high }}</b> 次
+                  <em v-if="vpsSummary.last"> · 最近一次：{{ vpsSummary.last }}</em>
+                </span>
+              </span>
+            </template>
+          </el-alert>
+          <span class="vps-controls">
+            <span class="control-label">放量倍数</span>
+            <el-input-number
+              v-model="vpsSurgeRatio" :min="1" :max="10" :step="0.1" :precision="1"
+              size="small" controls-position="right" style="width: 96px"
+            />
+            <span class="control-label">低位分位≤</span>
+            <el-input-number
+              v-model="vpsLowZone" :min="0" :max="50" :step="5" :precision="0"
+              size="small" controls-position="right" style="width: 88px"
+            />
+            <span class="control-label">高位分位≥</span>
+            <el-input-number
+              v-model="vpsHighZone" :min="50" :max="100" :step="5" :precision="0"
+              size="small" controls-position="right" style="width: 88px"
+            />
+          </span>
         </div>
         <div ref="chartRef" :style="{ height: chartHeight }" class="kline-chart" />
       </div>
@@ -140,6 +174,7 @@ const showAtr = ref(false)
 const showObv = ref(false)
 const showVr = ref(false)
 const showDmi = ref(false)
+const showVps = ref(false)
 
 // 附图开关清单：顺序即附图自上而下的排列顺序（渲染按此顺序生成 grid）
 const SUB_INDICATOR_FLAGS = [
@@ -153,7 +188,63 @@ const SUB_INDICATOR_FLAGS = [
   { key: 'obv', flag: showObv },
   { key: 'vr', flag: showVr },
   { key: 'dmi', flag: showDmi },
+  { key: 'vps', flag: showVps },
 ] as const
+
+// ================= 量价信号 VPS：底部放量 / 高位放量提醒 =================
+// 判定 = 相对量能（成交量 / N 日均量）× 价格位置（收盘在近 M 日区间的分位）。
+// 放量且处低位 → 底部放量（吸筹，多为买入信号）；放量且处高位 → 高位放量（出货，多为警示）。
+const VPS_STORAGE_KEY = 'datasources.vps'
+const VPS_SUMMARY_WINDOW = 60 // 面板统计只看最近 N 个交易日，避免整段历史干扰
+const vpsHighZone = ref(80)   // 价格处于近 20 日区间上 20% → 高位
+const vpsLowZone = ref(20)    // 价格处于近 20 日区间下 20% → 低位
+const vpsSurgeRatio = ref(2)  // 成交量 / 20 日均量 超过该倍数 → 放量
+
+/** 近 VPS_SUMMARY_WINDOW 日的信号次数与最近一次信号日期（供面板提醒用）。 */
+const vpsSummary = computed(() => {
+  const recent = [...klineRows.value]
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    .slice(-VPS_SUMMARY_WINDOW)
+  const points = calculateVPS(
+    recent, 20, 20, vpsSurgeRatio.value, vpsLowZone.value, vpsHighZone.value,
+  )
+  let bottom = 0
+  let high = 0
+  let lastDate = ''
+  let lastSignal = ''
+  points.forEach((point, index) => {
+    if (point.signal === 'bottom') bottom += 1
+    if (point.signal === 'high') high += 1
+    if (point.signal !== 'none') {
+      lastDate = String(recent[index]?.date ?? '')
+      lastSignal = point.signal === 'bottom' ? '底部放量' : '高位放量'
+    }
+  })
+  return {
+    bottom,
+    high,
+    last: lastDate ? `${lastDate} ${lastSignal}` : '',
+  }
+})
+
+function loadVpsThresholds() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(VPS_STORAGE_KEY) ?? '{}') as Record<string, number>
+    if (typeof saved.high === 'number') vpsHighZone.value = saved.high
+    if (typeof saved.low === 'number') vpsLowZone.value = saved.low
+    if (typeof saved.surge === 'number') vpsSurgeRatio.value = saved.surge
+  } catch {
+    // localStorage 不可用或内容损坏时保持默认值
+  }
+}
+loadVpsThresholds()
+
+watch([vpsHighZone, vpsLowZone, vpsSurgeRatio], () => {
+  localStorage.setItem(VPS_STORAGE_KEY, JSON.stringify({
+    high: vpsHighZone.value, low: vpsLowZone.value, surge: vpsSurgeRatio.value,
+  }))
+  if (klineRows.value.length > 0) renderKlineChart(klineRows.value)
+})
 
 // ================= 增量数据加载：根据缩放范围自动查询日期 =================
 const autoFetching = ref(false)
@@ -675,6 +766,66 @@ function calculateVR(data: KLineQueryItem[], period = 26) {
   })
 }
 
+/**
+ * 量价信号（VPS）：相对量能 × 价格位置 → 底部放量 / 高位放量。
+ *
+ * 每根 bar 返回 ``{ ratio, position, signal }``：
+ * - ``ratio``   当根成交量 / 前 N 日均量（相对量能倍数，1 = 与近期均量持平）；
+ * - ``position`` 当根收盘在近 M 日【最高-最低】区间内的分位（0~100，100=区间最高）；
+ * - ``signal``  'bottom' 底部放量（价处低位且显著放量，吸筹特征）
+ *               'high'   高位放量（价处高位且显著放量，出货警示）
+ *               'none'   其余（含放量但价格居中、缩量等中性情形）。
+ *
+ * 设计取舍：
+ * - 价格位置用**区间分位**而非「距 N 日最高的跌幅」，因为前者对趋势更稳定，
+ *   后者在单边上涨中永远接近 0，无法识别高位；
+ * - 只在价格进入**两端区间**（默认上下各 20%）且量能超阈值时才提示，
+ *   避免满屏标记导致提醒失效；
+ * - 均量窗口不含当根（用前 N 日），否则当根放量会抬高自身基准、削弱信号。
+ */
+interface VpsPoint {
+  ratio: number | null
+  position: number | null
+  signal: 'bottom' | 'high' | 'none'
+}
+
+function calculateVPS(
+  data: KLineQueryItem[],
+  avgWindow = 20,
+  priceWindow = 20,
+  surgeRatio = 2,
+  lowZone = 20,
+  highZone = 80,
+): VpsPoint[] {
+  const volumes = data.map((item) => toNumber(item.volume))
+  const closes = data.map((item) => toNumber(item.close))
+
+  return data.map((_, i) => {
+    // 均量与价格区间都需要足够样本，预热期返回中性（不提示）
+    if (i < avgWindow || i < priceWindow - 1) {
+      return { ratio: null, position: null, signal: 'none' as const }
+    }
+
+    // 相对量能：前 avgWindow 根均量（不含当根）
+    const avgVolume = volumes.slice(i - avgWindow, i).reduce((sum, v) => sum + v, 0) / avgWindow
+    const ratio = avgVolume > 0 ? volumes[i] / avgVolume : null
+
+    // 价格位置：收盘在近 priceWindow 根 [最低, 最高] 区间内的分位
+    const windowLow = Math.min(...closes.slice(i - priceWindow + 1, i + 1))
+    const windowHigh = Math.max(...closes.slice(i - priceWindow + 1, i + 1))
+    const position = windowHigh > windowLow
+      ? ((closes[i] - windowLow) / (windowHigh - windowLow)) * 100
+      : null
+
+    let signal: VpsPoint['signal'] = 'none'
+    if (ratio !== null && position !== null && ratio >= surgeRatio) {
+      if (position <= lowZone) signal = 'bottom'
+      else if (position >= highZone) signal = 'high'
+    }
+    return { ratio, position, signal }
+  })
+}
+
 /** 方向性指标 DMI(N)：+DI / -DI / ADX，ADX > 25 视为趋势成立 */
 function calculateDMI(data: KLineQueryItem[], period = 14) {
   const plusDm: number[] = []
@@ -769,6 +920,10 @@ function renderKlineChart(rows: KLineQueryItem[]) {
   const obv = calculateOBV(sortedRows)
   const vr = calculateVR(sortedRows)
   const { pdi, mdi, adx } = calculateDMI(sortedRows)
+const vpsPoints = calculateVPS(
+  sortedRows, 20, 20,
+  vpsSurgeRatio.value, vpsLowZone.value, vpsHighZone.value,
+)
 
   // ==============================================================================
   // 附图指标定义表（声明式）：新增指标只需追加一条，布局/坐标轴/图例自动生成。
@@ -807,10 +962,14 @@ function renderKlineChart(rows: KLineQueryItem[]) {
     data: Array<number | null>
     color: string
     barWidth?: string
+    /** 折线宽度（缺省 1.5） */
+    lineWidth?: number
     /** 柱状按值正负着色（MACD 柱） */
     colorBySign?: boolean
     /** 柱状按当日涨跌着色（成交量柱） */
     colorByCandle?: boolean
+    /** 柱状按自定义规则着色（VPS 量价信号）：返回 null 表示用默认色 */
+    colorByIndex?: (index: number) => string | null
   }
 
   interface SubIndicatorDef {
@@ -929,6 +1088,39 @@ function renderKlineChart(rows: KLineQueryItem[]) {
       })(),
       refs: [{ value: 25, color: '#f59e0b' }],
     },
+    {
+      key: 'vps',
+      label: '量价信号',
+      enabled: () => showVps.value,
+      series: [
+        {
+          name: '相对量能',
+          type: 'bar',
+          // 柱高 = 相对量能倍数；预热期为 null 自动断点
+          data: vpsPoints.map((point) => point.ratio),
+          color: '#cbd5e1',
+          barWidth: '60%',
+          // 底部放量=绿（吸筹），高位放量=红（出货警示），其余灰；仅命中的柱染色，
+          // 保持"哪里有信号看哪里"的低噪音呈现
+          colorByIndex: (index: number) => {
+            const signal = vpsPoints[index]?.signal
+            if (signal === 'bottom') return '#16a34a'
+            if (signal === 'high') return '#dc2626'
+            return '#cbd5e1'
+          },
+        },
+        {
+          name: '价格位置',
+          type: 'line',
+          data: vpsPoints.map((point) => point.position),
+          color: '#6366f1',
+          lineWidth: 1.2,
+        },
+      ],
+      // 双 Y 轴量纲不同（倍数 0~N / 分位 0~100），统一按 0~100 呈现便于同屏判读
+      yRange: { min: 0, max: 100 },
+      refs: [{ value: vpsSurgeRatio.value, color: '#f59e0b' }],
+    },
   ]
 
   const activeSubIndicators = subIndicators.filter((item) => item.enabled())
@@ -1041,6 +1233,14 @@ function renderKlineChart(rows: KLineQueryItem[]) {
           return calculateVolumeColor(toNumber(current.close), toNumber(current.open))
         }
       }
+      if (item.colorByIndex) {
+        // 自定义着色优先级最高：回调返回 null 时回落默认色
+        const colorByIndex = item.colorByIndex
+        itemStyle.color = (params: any) => {
+          const custom = colorByIndex(Number(params?.dataIndex))
+          return custom ?? item.color
+        }
+      }
       series.push({
         name: item.name,
         type: item.type,
@@ -1049,7 +1249,12 @@ function renderKlineChart(rows: KLineQueryItem[]) {
         data: item.data,
         ...(item.type === 'bar'
           ? { barWidth: item.barWidth ?? '60%', itemStyle }
-          : { smooth: true, symbol: 'none', lineStyle: { width: 1.5, color: item.color }, itemStyle }),
+          : {
+              smooth: true,
+              symbol: 'none',
+              lineStyle: { width: item.lineWidth ?? 1.5, color: item.color },
+              itemStyle,
+            }),
       })
     })
 
@@ -1150,5 +1355,31 @@ p { color: #667085; }
 .sync-form { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .kline-chart-wrap { margin-top: 16px; }
 .chart-toolbar { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+
+.vps-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.vps-tip :deep(.el-alert__content) { width: 100%; }
+.vps-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.vps-swatch {
+  width: 10px; height: 10px; border-radius: 2px; display: inline-block;
+  margin-left: 10px; flex: none;
+}
+.vps-swatch:first-child { margin-left: 0; }
+.vps-swatch.bottom { background: #16a34a; }
+.vps-swatch.high { background: #dc2626; }
+.vps-swatch.none { background: #cbd5e1; }
+.vps-stats { margin-left: 14px; color: #667085; }
+.vps-stats b { margin: 0 2px; }
+.vps-stats b.bottom { color: #16a34a; }
+.vps-stats b.high { color: #dc2626; }
+.vps-stats em { font-style: normal; color: #94a3b8; }
+
+.vps-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.vps-controls .control-label { color: #667085; font-size: 12px; white-space: nowrap; }
 .kline-chart { width: 100%; min-height: 420px; }
 </style>
