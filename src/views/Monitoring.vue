@@ -67,6 +67,18 @@
           <span class="dot green" />分钟下跌
         </div>
       </div>
+      <div class="alert-bar">
+        <span class="alert-title">条件提醒</span>
+        <el-checkbox
+          v-for="type in ALERT_TYPES"
+          :key="type.key"
+          v-model="alertFlags[type.key]"
+          size="small"
+          :class="['alert-item', type.tone === 'warning' ? 'is-top' : 'is-bottom']"
+        >{{ type.label }}</el-checkbox>
+        <span v-if="alertCount" class="alert-on">已开启 {{ alertCount }} 项 · 仅提示新到数据点</span>
+        <span v-else class="alert-hint">开启后在新数据点出现交叉时弹出消息框（默认关闭，刷新不保留）</span>
+      </div>
       <div v-if="points.length" ref="chartRef" class="chart" :style="{ height: chartHeight }" />
       <el-empty
         v-else-if="!loading"
@@ -79,6 +91,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ElNotification } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { echarts } from '@/utils/echarts'
 import type { EChartsType } from '@/utils/echarts'
@@ -434,6 +447,234 @@ async function refresh(silent = false) {
   }
 }
 
+// ------------------------------------------------------------------ //
+// 条件提醒（纯前端）：MACD / KDJ / RSI 的底部、顶部交叉 → 弹出消息框
+//
+// 设计边界（与需求一一对应）：
+// - 判定完全在前端完成，**不依赖后端改动**，也不向后端发任何请求；
+// - 由用户勾选开启，默认全部关闭；**不持久化**（刷新页面即恢复关闭态）；
+// - 只对「新到数据点」生效——每次数据到达先建立基线，之后才提示，
+//   避免刷新页面/切换标的时把当天历史上的交叉全部补报一遍；
+// - 提示用 ElNotification（标题=标的+事件，正文=时间/价格/涨跌幅+交叉说明）。
+// ------------------------------------------------------------------ //
+
+type AlertKey = 'macd_bottom' | 'macd_top' | 'kdj_bottom' | 'kdj_top' | 'rsi_bottom' | 'rsi_top'
+
+interface AlertType {
+  key: AlertKey
+  label: string
+  /** 触发时展示给用户的说明文案 */
+  desc: string
+  /** success=机会类（底部），warning=风险类（顶部） */
+  tone: 'success' | 'warning'
+}
+
+// 阈值与既有指标子图的参考线保持一致（KDJ 80/20、RSI 70/30）
+const KDJ_OVERSOLD = 20
+const KDJ_OVERBOUGHT = 80
+const RSI_OVERSOLD = 30
+const RSI_OVERBOUGHT = 70
+
+const ALERT_TYPES: AlertType[] = [
+  {
+    key: 'macd_bottom', label: 'MACD底部交叉',
+    desc: 'DIF 上穿 DEA 且交叉前双线均在 0 轴下方（低位金叉）', tone: 'success',
+  },
+  {
+    key: 'macd_top', label: 'MACD顶部交叉',
+    desc: 'DIF 下穿 DEA 且交叉前双线均在 0 轴上方（高位死叉）', tone: 'warning',
+  },
+  {
+    key: 'kdj_bottom', label: 'KDJ底部交叉',
+    desc: `K 上穿 D 且交叉前双线均处超卖区（<${KDJ_OVERSOLD}）`, tone: 'success',
+  },
+  {
+    key: 'kdj_top', label: 'KDJ顶部交叉',
+    desc: `K 下穿 D 且交叉前双线均处超买区（>${KDJ_OVERBOUGHT}）`, tone: 'warning',
+  },
+  {
+    key: 'rsi_bottom', label: 'RSI底部交叉',
+    desc: `RSI 由下向上穿过 ${RSI_OVERSOLD}（脱离超卖）`, tone: 'success',
+  },
+  {
+    key: 'rsi_top', label: 'RSI顶部交叉',
+    desc: `RSI 由上向下穿过 ${RSI_OVERBOUGHT}（脱离超买）`, tone: 'warning',
+  },
+]
+
+// 未持久化：普通 ref（区别于上方 indicatorFlags 的 localStorage 存储）
+const alertFlags = ref<Record<AlertKey, boolean>>({
+  macd_bottom: false, macd_top: false, kdj_bottom: false, kdj_top: false,
+  rsi_bottom: false, rsi_top: false,
+})
+
+/** 已开启的提醒项数（仅用于 UI 提示） */
+const alertCount = computed(() => ALERT_TYPES.filter((t) => alertFlags.value[t.key]).length)
+
+/** 已评估到的最新数据时间戳；换标的时清空（首帧只建基线不提示） */
+let alertSymbol = ''
+let alertEvaluatedTs = ''
+
+/** 上穿：前一根 A<=B 且当根 A>B（任一侧缺失则不判定） */
+function crossUp(a: Num[], b: Num[], i: number): boolean {
+  if (i === 0) return false
+  const [pa, pb, ca, cb] = [a[i - 1], b[i - 1], a[i], b[i]]
+  if (pa === null || pb === null || ca === null || cb === null) return false
+  return pa <= pb && ca > cb
+}
+
+/** 下穿：前一根 A>=B 且当根 A<B（任一侧缺失则不判定） */
+function crossDown(a: Num[], b: Num[], i: number): boolean {
+  if (i === 0) return false
+  const [pa, pb, ca, cb] = [a[i - 1], b[i - 1], a[i], b[i]]
+  if (pa === null || pb === null || ca === null || cb === null) return false
+  return pa >= pb && ca < cb
+}
+
+interface AlertIndicators {
+  dif: Num[]
+  dea: Num[]
+  k: Num[]
+  d: Num[]
+  rsi: Num[]
+}
+
+/** 一次性算齐三个指标（每根约 240 点，成本可忽略），供交叉判定复用 */
+function computeAlertIndicators(series: AlignedSeries): AlertIndicators {
+  const { dif, dea } = computeMacd(series.prices)
+  const { k, d } = computeKdj(series.prices, series.highs, series.lows)
+  return { dif, dea, k, d, rsi: computeRsi(series.prices) }
+}
+
+/**
+ * 判定第 i 根 K 线触发了哪些交叉事件（纯函数，不依赖开关状态）。
+ *
+ * 关键语义是「带位置约束的交叉」——仅区分金叉/死叉会把大量中位震荡算作信号，
+ * 故底部/顶部要求交叉**发生在对应极值区**：
+ * - MACD：交叉**前**双线同侧（都在 0 轴下=低位金叉 / 都在 0 轴上=高位死叉）；
+ * - KDJ：交叉**前**双线同处超卖(<20)或超买(>80)区；
+ * - RSI：与阈值线本身交叉（上穿 30 / 下穿 70）。
+ *
+ * 用「交叉前」而非「交叉后」的取值：交叉后价格已从极值区反弹离开，
+ * 用后置值会漏掉刚脱离超卖区的那次金叉。
+ */
+function detectCrossSignals(ind: AlertIndicators, i: number): AlertKey[] {
+  const out: AlertKey[] = []
+  if (i < 1) return out
+
+  const [dPrev, ePrev] = [ind.dif[i - 1], ind.dea[i - 1]]
+  const bothBelowZero = dPrev !== null && ePrev !== null && dPrev < 0 && ePrev < 0
+  const bothAboveZero = dPrev !== null && ePrev !== null && dPrev > 0 && ePrev > 0
+  if (bothBelowZero && crossUp(ind.dif, ind.dea, i)) out.push('macd_bottom')
+  if (bothAboveZero && crossDown(ind.dif, ind.dea, i)) out.push('macd_top')
+
+  const [kPrev, dPrevK] = [ind.k[i - 1], ind.d[i - 1]]
+  const bothOversold = kPrev !== null && dPrevK !== null && kPrev < KDJ_OVERSOLD && dPrevK < KDJ_OVERSOLD
+  const bothOverbought = kPrev !== null && dPrevK !== null && kPrev > KDJ_OVERBOUGHT && dPrevK > KDJ_OVERBOUGHT
+  if (bothOversold && crossUp(ind.k, ind.d, i)) out.push('kdj_bottom')
+  if (bothOverbought && crossDown(ind.k, ind.d, i)) out.push('kdj_top')
+
+  const [rPrev, rNow] = [ind.rsi[i - 1], ind.rsi[i]]
+  if (rPrev !== null && rNow !== null) {
+    if (rPrev < RSI_OVERSOLD && rNow >= RSI_OVERSOLD) out.push('rsi_bottom')
+    if (rPrev > RSI_OVERBOUGHT && rNow <= RSI_OVERBOUGHT) out.push('rsi_top')
+  }
+  return out
+}
+
+function fmtNum(value: Num): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-'
+  return Math.abs(value) >= 100 ? value.toFixed(1) : value.toFixed(3)
+}
+
+/**
+ * 每次数据到达后评估提醒：只处理**比上次更晚**的新数据点。
+ *
+ * - 首帧（页面加载 / 切换标的）只把最新时间戳写入基线，不提示——否则会把当天
+ *   历史上的每一次交叉都补报出来，沦为噪音；
+ * - 全部未开启时也推进基线，确保「中途开启」不会回头补报开启前的历史信号；
+ * - 换标的时由 `alertSymbol` 不匹配触发重建基线。
+ */
+function evaluateAlerts() {
+  const pts = points.value
+  if (pts.length < 2) return
+  const latestTs = pts[pts.length - 1].ts
+
+  if (alertSymbol !== symbolCode.value) {
+    alertSymbol = symbolCode.value
+    alertEvaluatedTs = latestTs
+    return
+  }
+
+  const enabled = ALERT_TYPES.filter((t) => alertFlags.value[t.key])
+  if (enabled.length === 0 || latestTs <= alertEvaluatedTs) {
+    // 未开启也推进基线，避免中途开启时回头补报历史
+    alertEvaluatedTs = latestTs
+    return
+  }
+
+  const series = buildAlignedSeries()
+  if (!series) return
+  const indicators = computeAlertIndicators(series)
+
+  // 只考察「上次基线之后」新到的数据点（含当根最新点）
+  const candidates: number[] = []
+  for (let i = 0; i < series.priceTs.length; i += 1) {
+    const ts = series.priceTs[i]
+    if (ts !== null && ts > alertEvaluatedTs && ts <= latestTs) candidates.push(i)
+  }
+  const latestIndex = series.fixedTimes.indexOf(pts[pts.length - 1].local_time)
+  if (latestIndex >= 0 && !candidates.includes(latestIndex)) candidates.push(latestIndex)
+
+  const fired = new Set<AlertKey>()
+  for (const index of candidates) {
+    for (const key of detectCrossSignals(indicators, index)) {
+      if (alertFlags.value[key]) fired.add(key)
+    }
+  }
+  for (const type of enabled) {
+    if (fired.has(type.key)) raiseAlert(type, series, indicators)
+  }
+  alertEvaluatedTs = latestTs
+}
+
+/** 弹出消息框：标题=事件+标的，正文=时间/价格/涨跌幅/交叉说明/指标值 */
+function raiseAlert(type: AlertType, series: AlignedSeries, indicators: AlertIndicators) {
+  const latest = points.value[points.value.length - 1]
+  if (!latest) return
+  const index = series.fixedTimes.indexOf(latest.local_time)
+  const name = symbolOptions.value.find((item) => item.code === symbolCode.value)?.name ?? ''
+  const change = Number(latest.change)
+  const changeColor = change > 0 ? '#dc2626' : change < 0 ? '#16a34a' : '#667085'
+  const rows = [
+    `<b>${latest.local_time}</b>　现价 ${latest.price}` +
+      `（<span style="color:${changeColor}">${latest.change}%</span>）`,
+    type.desc,
+  ]
+
+  // 附加触发那一根的指标值，便于用户复核
+  let values = ''
+  if (index >= 0) {
+    if (type.key.startsWith('macd')) {
+      values = `DIF ${fmtNum(indicators.dif[index])} / DEA ${fmtNum(indicators.dea[index])}`
+    } else if (type.key.startsWith('kdj')) {
+      values = `K ${fmtNum(indicators.k[index])} / D ${fmtNum(indicators.d[index])}`
+    } else {
+      values = `RSI ${fmtNum(indicators.rsi[index])}`
+    }
+  }
+  if (values) rows.push(`指标值：${values}`)
+
+  ElNotification({
+    title: `${type.label} · ${symbolCode.value}${name ? ` ${name}` : ''}`,
+    message: rows.join('<br/>'),
+    type: type.tone,
+    duration: 8000,
+    dangerouslyUseHTMLString: true,
+    offset: 48,
+  })
+}
+
 function applyPayload(data: IntradayPayload) {
   payload.value = data
   // 增量合并：服务端每次返回当日全量，按 ts 求并集后升序（避免全量重绘）
@@ -442,10 +683,57 @@ function applyPayload(data: IntradayPayload) {
     byTs.set(point.ts, point)
   }
   points.value = [...byTs.values()].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0))
+  // 评估条件提醒（与渲染解耦：首帧只建基线，之后只对新到数据点提示）
+  evaluateAlerts()
   // points 从空到非空会触发 v-if 重建图表 div；DOM 更新在 nextTick，
   // 必须等渲染完成后再画图，否则 chartRef 为 null 提前 return（表现为进入页面白图，需手动刷新）
   void nextTick().then(renderChart)
   if (!streamActive.value) schedulePolling()
+}
+
+/** 一次对齐后的分时序列（渲染与提醒判定共用，避免两处逻辑漂移） */
+interface AlignedSeries {
+  fixedTimes: string[]
+  prices: Num[]
+  avgPrices: Num[]
+  volumes: Array<number | null>
+  highs: Num[]
+  lows: Num[]
+  pointByTime: Map<string, IntradayPointItem>
+  /** 每个刻度对应的点时间戳（缺数据为 null），供提醒按新到数据点判定 */
+  priceTs: Array<string | null>
+}
+
+/**
+ * 把 `points` 按市场固定分钟刻度对齐成定长序列。
+ *
+ * X 轴按市场固定为全交易分钟（A=240 / HK=330 / US=390），不随已有数据伸缩，
+ * 缺数据处为 null。提醒判定与图表渲染共用本函数，保证两侧看到的是同一份数据。
+ */
+function buildAlignedSeries(): AlignedSeries | null {
+  const current = payload.value
+  if (!current) return null
+  const fixedTimes = marketSessionMinutes(current.market ?? 'A')
+  const timeIndex = new Map(fixedTimes.map((label, index) => [label, index] as const))
+  const prices: Num[] = new Array(fixedTimes.length).fill(null)
+  const avgPrices: Num[] = new Array(fixedTimes.length).fill(null)
+  const volumes: Array<number | null> = new Array(fixedTimes.length).fill(null)
+  const highs: Num[] = new Array(fixedTimes.length).fill(null)
+  const lows: Num[] = new Array(fixedTimes.length).fill(null)
+  const priceTs: Array<string | null> = new Array(fixedTimes.length).fill(null)
+  const pointByTime = new Map<string, IntradayPointItem>()
+  for (const point of points.value) {
+    const index = timeIndex.get(point.local_time)
+    if (index === undefined) continue
+    prices[index] = Number(point.price)
+    avgPrices[index] = point.avg_price === null || point.avg_price === '' ? null : Number(point.avg_price)
+    volumes[index] = point.volume
+    highs[index] = point.high === null || point.high === '' ? null : Number(point.high)
+    lows[index] = point.low === null || point.low === '' ? null : Number(point.low)
+    priceTs[index] = point.ts
+    pointByTime.set(point.local_time, point)
+  }
+  return { fixedTimes, prices, avgPrices, volumes, highs, lows, pointByTime, priceTs }
 }
 
 function renderChart() {
@@ -458,22 +746,10 @@ function renderChart() {
     chartEl = chartRef.value
   }
   chartInstance ??= echarts.init(chartRef.value)
-  const market = payload.value?.market ?? 'A'
-  // X 轴按市场固定为全交易分钟刻度（不随已有数据伸缩，缺数据处为空）
-  const fixedTimes = marketSessionMinutes(market)
-  const timeIndex = new Map(fixedTimes.map((label, index) => [label, index] as const))
-  const prices: Array<number | null> = new Array(fixedTimes.length).fill(null)
-  const avgPrices: Array<number | null> = new Array(fixedTimes.length).fill(null)
-  const volumes: Array<number | null> = new Array(fixedTimes.length).fill(null)
-  const pointByTime = new Map<string, IntradayPointItem>()
-  for (const point of points.value) {
-    const index = timeIndex.get(point.local_time)
-    if (index === undefined) continue
-    prices[index] = Number(point.price)
-    avgPrices[index] = point.avg_price === null || point.avg_price === '' ? null : Number(point.avg_price)
-    volumes[index] = point.volume
-    pointByTime.set(point.local_time, point)
-  }
+
+  const aligned = buildAlignedSeries()
+  if (!aligned) return
+  const { fixedTimes, prices, avgPrices, volumes, highs, lows, pointByTime } = aligned
   // 量能子图：后端 volume/amount 均为当日累计值，柱状必须画「分钟增量」而非累计斜坡
   const minuteVolumes = computeMinuteVolumes(volumes)
   // 柱子按「当分钟涨跌」着色（红涨绿跌），而非按当日累计涨跌幅——
@@ -488,15 +764,6 @@ function renderChart() {
   // 量能均线：VOL MA5 / MA10，用于识别放量 / 缩量
   const volumeMa5 = computeMovingAverage(minuteVolumes, 5)
   const volumeMa10 = computeMovingAverage(minuteVolumes, 10)
-  const highs: Num[] = new Array(fixedTimes.length).fill(null)
-  const lows: Num[] = new Array(fixedTimes.length).fill(null)
-  for (const point of points.value) {
-    const index = timeIndex.get(point.local_time)
-    if (index === undefined) continue
-    highs[index] = point.high === null || point.high === '' ? null : Number(point.high)
-    lows[index] = point.low === null || point.low === '' ? null : Number(point.low)
-  }
-
   // 价格轴：以昨收为中心，最小振幅 = max(实际波动, yMinSpanPct%)
   const preClose = Number(payload.value?.pre_close ?? 0)
   let priceMin: number | undefined
@@ -832,6 +1099,9 @@ watch(symbolCode, (code) => {
   chartInstance?.dispose()
   chartInstance = null
   chartEl = null
+  // 条件提醒：换标的重建评估基线，新标的首帧只建基线不提示历史交叉
+  alertSymbol = ''
+  alertEvaluatedTs = ''
 
   // SSE 持久化连接：切换标的即重建连接；snapshot 事件推送全量
   startStream()
