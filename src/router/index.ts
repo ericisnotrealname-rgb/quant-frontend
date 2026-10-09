@@ -123,6 +123,12 @@ const router = createRouter({
       meta: { title: '自选池', requiresAuth: true },
     },
     {
+      path: '/setup',
+      name: 'setup',
+      component: () => import('@/views/Setup.vue'),
+      meta: { title: '初始化部署' },
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/views/Login.vue'),
@@ -132,9 +138,25 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
-  if (!to.meta.requiresAuth) return true
   const auth = useAuthStore()
-  if (auth.user || await auth.loadProfile()) return true
+
+  // 部署初始化优先判定：**仅当仍需引导时**才强制跳转引导页。
+  // 注意这里必须用返回值判断，不能读 auth.setupRequired —— 上一次调用可能已把
+  // 状态改写，若再据此把 /setup 推给/login，而 /login 又被推回 /setup，
+  // 会形成 setup ⇄ login 死循环（vue-router 每次跳转都触发守卫与组件加载，
+  // 表现为 CPU 持续高占用）。
+  const needsSetup = await auth.loadSetupStatus()
+  if (needsSetup && to.name !== 'setup') {
+    return { name: 'setup' }
+  }
+  // 引导已关闭后不再展示引导页，直接回到登录（仅在已确定不需要引导时判断，
+  // 避免与上面的分支构成往复）
+  if (!needsSetup && to.name === 'setup') {
+    return { name: 'login' }
+  }
+
+  if (!to.meta.requiresAuth) return true
+  if (auth.user || (await auth.loadProfile())) return true
   return { name: 'login', query: { redirect: to.fullPath } }
 })
 
