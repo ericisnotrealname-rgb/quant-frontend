@@ -1,5 +1,5 @@
 import api from './index'
-import type { Alert, AlertChannel, AlertStatistics, EventItem, EventTypeItem, ExecutionLog, NodeRunItem, Order, SuiteRun } from '@/types/api'
+import type { Alert, AlertChannel, AlertStatistics, EventItem, EventTypeItem, ExecutionLog, NodeRunItem, Order, SuiteRun, AccountFundConfig, AccountSyncResult } from '@/types/api'
 
 function unwrapList<T>(data: unknown): T[] {
   return Array.isArray(data) ? data : (data as { results?: T[] })?.results ?? []
@@ -30,6 +30,23 @@ export const executionApi = {
       symbols,
       payload,
     })
+  },
+
+  // gm 账户预配置（gm user id → 资金/持仓快照）
+  accounts() {
+    return api.get<AccountFundConfig[]>('/execution/accounts/', { params: { page_size: 500 } })
+  },
+  createAccount(payload: Partial<AccountFundConfig>) {
+    return api.post<AccountFundConfig>('/execution/accounts/', payload)
+  },
+  updateAccount(id: number, payload: Partial<AccountFundConfig>) {
+    return api.patch<AccountFundConfig>(`/execution/accounts/${id}/`, payload)
+  },
+  deleteAccount(id: number) {
+    return api.delete<void>(`/execution/accounts/${id}/`)
+  },
+  syncAccount(id: number) {
+    return api.post<AccountSyncResult>(`/execution/accounts/${id}/sync/`)
   },
 
   // 告警

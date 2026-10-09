@@ -16,8 +16,11 @@
           <template #default="{ row }">{{ triggerLabel(row.trigger_type) }}</template>
         </el-table-column>
         <el-table-column prop="root_suite" label="根 Suite ID" width="120" />
-        <el-table-column prop="account_id" label="账户 ID" width="160">
-          <template #default="{ row }">{{ row.account_id || "—" }}</template>
+        <el-table-column prop="account_id" label="账户" width="170">
+          <template #default="{ row }">
+            <div v-if="row.account_id">{{ accountLabel(row.account_id) }}</div>
+            <span v-else>—</span>
+          </template>
         </el-table-column>
         <el-table-column prop="allocated_capital" label="占用资金" width="120">
           <template #default="{ row }">{{ row.allocated_capital ?? "—" }}</template>
@@ -82,8 +85,24 @@
           标的范围已下沉到 <strong>Case</strong>：请在 Case 的 params.symbol_scope 中声明（全部标的 / 按分组 / 按标的）。
           本 Plan 覆盖的标的 = 根 Suite 编排树内各 Case 声明的<strong>并集</strong>；树内没有任何 Case 声明时无法发布。
         </el-alert>
-        <el-form-item label="交易账户 ID">
-          <el-input v-model="form.account_id" placeholder="gm 模拟账户 ID（留空则不绑定）" />
+        <el-form-item label="交易账户">
+          <el-select v-model="form.account_id" placeholder="选择预配置的 gm 账户（留空则不启用资金管控）" clearable filterable style="width: 100%">
+            <el-option
+              v-for="acc in accounts"
+              :key="acc.id"
+              :label="`${acc.display_name || acc.masked_account_id}（可用 ${money(acc.available_capital)}）`"
+              :value="acc.account_id"
+            >
+              <span>{{ acc.display_name || acc.masked_account_id }}</span>
+              <span style="float: right; color: #8a94a6; font-size: 12px">
+                可用 {{ money(acc.available_capital) }}
+              </span>
+            </el-option>
+          </el-select>
+          <div v-if="!accounts.length" class="field-hint">
+            尚未预配置账户，请先到<router-link to="/accounts">账户管理</router-link>登记 gm user id。
+          </div>
+          <div v-else-if="accountHint" class="field-warn">{{ accountHint }}</div>
         </el-form-item>
         <el-form-item label="占用资金总额">
           <el-input-number v-model="form.allocated_capital" :min="0" :precision="2" :controls="false" style="width: 100%" placeholder="Plan 占用的账户资金（留空则不启用资金管控）" />
@@ -152,11 +171,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue"
+import { computed, ref, onMounted } from "vue"
 import { ElMessage } from "element-plus"
 import { strategyApi } from "@/api/strategy"
 import { watchlistsApi } from "@/api/watchlists"
-import type { PlanItem, PlanPositionMode, GroupItem, SymbolItem } from "@/types/api"
+import { executionApi } from "@/api/execution"
+import type { PlanItem, PlanPositionMode, GroupItem, SymbolItem, AccountFundConfig } from "@/types/api"
 
 /** 交易时段窗口（表单用 HH:mm 展示，后端存扁平 [起时,起分,止时,止分]） */
 type TimeRange = { start: string; end: string }
@@ -194,6 +214,27 @@ function defaultForm() {
 }
 
 const form = ref(defaultForm())
+/** 预配置的 gm 账户：Plan 的account_id 从这里选，不再手填字符串 */
+const accounts = ref<AccountFundConfig[]>([])
+const selectedAccount = computed(() => accounts.value.find((a) => a.account_id === form.value.account_id))
+/** 账户侧的即时提示（外部持仓口径提醒 / 额度不足预览） */
+const accountHint = computed(() => {
+  const acc = selectedAccount.value
+  if (!acc) return ""
+  if (!acc.is_active) return "该账户已停用，无法分配占用资金"
+  if (acc.basis_suggestion && acc.basis_suggestion !== acc.capital_basis)
+    return "该账户存在外部持仓，建议在账户管理中把额度口径改为「账面资金」"
+  return ""
+})
+/** 列表列展示：优先账户名，否则脱敏 id */
+function accountLabel(accountId: string) {
+  const acc = accounts.value.find((a) => a.account_id === accountId)
+  return acc ? (acc.display_name || acc.masked_account_id) : "—"
+}
+function money(v: string | number | null | undefined) {
+  const n = Number(v ?? 0)
+  return Number.isFinite(n) ? n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"
+}
 
 function toMinutes(value: string): number | null {
   const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || "").trim())
@@ -464,7 +505,15 @@ async function remove(id: number) {
   }
 }
 
-onMounted(async () => { await loadData(); const [groupResponse, symbolResponse] = await Promise.all([watchlistsApi.groups(), watchlistsApi.symbols({ limit: 500 })]); groups.value = groupResponse.data; symbols.value = symbolResponse.data })
+onMounted(async () => {
+  await loadData()
+  const [groupResponse, symbolResponse, accountResponse] = await Promise.all([
+    watchlistsApi.groups(), watchlistsApi.symbols({ limit: 500 }), executionApi.accounts(),
+  ])
+  groups.value = groupResponse.data
+  symbols.value = symbolResponse.data
+  try { accounts.value = accountResponse.data } catch { accounts.value = [] }
+})
 </script>
 
 <style scoped>
@@ -475,5 +524,8 @@ h1 { margin: 6px 0; color: #172033; font-size: 36px; }
 p { color: #667085; }
 .risk-hint { margin-bottom: 14px; }
 .risk-hint-inline { margin-left: 8px; color: #98a2b3; font-size: 12px; }
+.field-hint { margin-top: 6px; font-size: 12px; color: #8a94a6; }
+.field-hint a { color: #d97706; }
+.field-warn { margin-top: 6px; font-size: 12px; color: #d97706; }
 </style>
 

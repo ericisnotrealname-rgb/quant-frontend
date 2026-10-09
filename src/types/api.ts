@@ -352,3 +352,48 @@ export interface DashboardTrend {
   days: number
   series: DashboardTrendPoint[]
 }
+
+/** gm 账户预配置（预置 gm user id，按该 id 匹配 Plan 的资金占用） */
+export type AccountCapitalBasis = 'total' | 'cash' | 'available'
+
+export interface AccountPosition {
+  symbol: string
+  volume: string
+  price: string | null
+  market_value: string
+  is_external: boolean
+}
+
+export interface AccountFundConfig {
+  id: number
+  account_id: string
+  masked_account_id: string
+  display_name: string
+  remark: string
+  is_active: boolean
+  label: string
+  total_capital: string
+  source: 'manual' | 'gm'
+  capital_basis: AccountCapitalBasis
+  /** 按持仓结构给出的口径建议（'' 表示无建议） */
+  basis_suggestion: AccountCapitalBasis | ''
+  available_cash: string | null
+  market_value: string | null
+  frozen_cash: string | null
+  synced_at: string | null
+  is_stale: boolean
+  position_count: number
+  position_volume: string
+  positions: AccountPosition[]
+  position_symbols: string[]
+  has_external_position: boolean
+  external_position_symbols: string[]
+  position_synced_at: string | null
+  allocated_capital: string
+  available_capital: string
+}
+
+export interface AccountSyncResult {
+  account: AccountFundConfig
+  sync: Record<string, unknown> & { basis_suggestion?: string }
+}
